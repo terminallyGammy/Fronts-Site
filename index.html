@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Current Fronters</title>
   <style>
     body {
@@ -20,40 +20,39 @@
       border-radius: 8px;
       background: #fafafa;
     }
+    .note { font-size: 0.9rem; opacity: 0.8; margin-top: 0.75rem; }
   </style>
 </head>
 <body>
   <h1>⋆˚✿˖°Current Fronters⋆˚✿˖°</h1>
   <div id="fronts">Loading...</div>
+  <div class="note" id="meta"></div>
 
   <script>
     async function loadFronts() {
+      const out = document.getElementById("fronts");
+      const meta = document.getElementById("meta");
       try {
-        const res = await fetch("https://api.apparyllis.com/v1/fronters/", {
-          headers: { "Authorization": "p0sFaZv5k7YEu7Gn/nWbdfNvnLuutGp8o6XqueleYQLe8b2JC1vIpZD8qWqE4Cle" }
-        });
-
-        if (!res.ok) {
-          throw new Error(res.status + " " + res.statusText);
-        }
-
+        const res = await fetch("/api/fronters"); // ← call proxy, not SP API
+        if (!res.ok) throw new Error(res.status + " " + res.statusText);
         const data = await res.json();
-        const container = document.getElementById("fronts");
 
-        if (!data.membersFronting || data.membersFronting.length === 0) {
-          container.innerText = "No one fronting right now.";
+        if (!data?.membersFronting?.length) {
+          out.textContent = "No one fronting right now.";
+          meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
           return;
         }
 
-        container.innerHTML = data.membersFronting
+        out.innerHTML = data.membersFronting
           .map(m => `<div class="front">${m.name || m.displayName || "Unnamed"}</div>`)
           .join("");
+
+        meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
       } catch (err) {
-        document.getElementById("fronts").innerText = "Error loading fronts.";
+        out.textContent = "Error loading fronts.";
         console.error(err);
       }
     }
-
     loadFronts();
   </script>
 </body>
