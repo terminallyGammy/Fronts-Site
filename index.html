@@ -33,21 +33,31 @@
       const out = document.getElementById("fronts");
       const meta = document.getElementById("meta");
       try {
-        const res = await fetch("/api/fronters"); // ← call proxy, not SP API
+        const res = await fetch("/api/fronters"); // via your proxy
         if (!res.ok) throw new Error(res.status + " " + res.statusText);
+
         const data = await res.json();
+        console.log(data); // 👈 check console to see raw response
 
         if (!data?.membersFronting?.length) {
           out.textContent = "No one fronting right now.";
-          meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
+          if (data?.lastChange) {
+            meta.textContent = "Last change: " + new Date(data.lastChange).toLocaleString();
+          }
           return;
         }
 
         out.innerHTML = data.membersFronting
-          .map(m => `<div class="front">${m.name || m.displayName || "Unnamed"}</div>`)
+          .map(m => `
+        <div class="front" style="border-left: 8px solid ${m.color || "#ddd"};">
+          ${m.displayName || m.name || "Unnamed"}
+        </div>
+      `)
           .join("");
 
-        meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
+        if (data?.lastChange) {
+          meta.textContent = "Last change: " + new Date(data.lastChange).toLocaleString();
+        }
       } catch (err) {
         out.textContent = "Error loading fronts.";
         console.error(err);
