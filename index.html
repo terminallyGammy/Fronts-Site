@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Current Fronts</title>
+  <title>Current Fronters</title>
   <style>
     body {
       font-family: sans-serif;
@@ -23,24 +23,30 @@
   </style>
 </head>
 <body>
-  <h1>🌸 Current Fronts 🌸</h1>
+  <h1>⋆˚✿˖°Current Fronters⋆˚✿˖°</h1>
   <div id="fronts">Loading...</div>
 
   <script>
     async function loadFronts() {
       try {
-        const res = await fetch("https://api.apparyllis.com/v1/front", {
-          headers: { "Authorization": "Bearer p0sFaZv5k7YEu7Gn/nWbdfNvnLuutGp8o6XqueleYQLe8b2JC1vIpZD8qWqE4Cle" }
+        const res = await fetch("https://api.apparyllis.com/v1/fronters/", {
+          headers: { "Authorization": "p0sFaZv5k7YEu7Gn/nWbdfNvnLuutGp8o6XqueleYQLe8b2JC1vIpZD8qWqE4Cle" }
         });
+
+        if (!res.ok) {
+          throw new Error(res.status + " " + res.statusText);
+        }
+
         const data = await res.json();
+        const container = document.getElementById("fronts");
 
         if (!data.membersFronting || data.membersFronting.length === 0) {
-          document.getElementById("fronts").innerText = "No one fronting right now.";
+          container.innerText = "No one fronting right now.";
           return;
         }
 
-        document.getElementById("fronts").innerHTML = data.membersFronting
-          .map(m => `<div class="front">${m.name}</div>`)
+        container.innerHTML = data.membersFronting
+          .map(m => `<div class="front">${m.name || m.displayName || "Unnamed"}</div>`)
           .join("");
       } catch (err) {
         document.getElementById("fronts").innerText = "Error loading fronts.";
