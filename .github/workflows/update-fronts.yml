@@ -106,14 +106,21 @@ jobs:
                     . as $mid
                     | ( ( $mem[] | select(.id==$mid) | .content ) // null ) as $m
                     | if $m != null then
-                        # build fields array and pick WARNING
-                        ( ($m.fields // {}) | to_entries
+                        # Normalize custom fields into [{label,value,private,type}]
+                        (
+                          ($m.fields // {})
+                          | to_entries
                           | map({
-                              label: (.value.name // null),
-                              value: (.value.value // null),
-                              private: (.value.private // false),
-                              type: (.value.type // null)
+                              # label can be inside .value.name OR be the key itself
+                              label: (.value.name // .key // null),
+                              # value may be nested in .value.value OR be a scalar directly
+                              value: ( ( .value.value // .value // null ) ),
+                              # optional metadata (best-effort)
+                              private: ( .value.private // false ),
+                              type:    ( .value.type    // null )
                             })
+                          # drop empties
+                          | map(select(.label != null and .value != null and (.label|tostring|length) > 0 and (.value|tostring|length) > 0))
                         ) as $allFields
                         | {
                             id: $mid,
