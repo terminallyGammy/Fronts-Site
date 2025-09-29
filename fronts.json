@@ -1,4 +1,13 @@
 {
-  "membersFronting": [],
-  "lastChange": "null (null) cannot be parsed as a number"
+  "lastChange": "2025-09-29T04:06:46Z",
+  "membersFronting": [
+    {
+      "id": "687c24324729979f0e000000",
+      "displayName": "Sun",
+      "pronouns": "He/Him",
+      "avatar": "https://files.catbox.moe/cfd8ne.webp",
+      "color": "#eebb54",
+      "warning": null
+    }
+  ]
 }
