@@ -2,61 +2,65 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"           # every ~5 min
-  workflow_dispatch:                # allow manual runs
+    - cron: '*/5 * * * *'   # every ~5 min
+  workflow_dispatch: {}
+
+permissions:
+  contents: write           # allow committing fronts.json
 
 env:
-  PAGES_BRANCH: main                # <-- change if your Pages branch is different (e.g., gh-pages)
-  PAGES_DIR: .                      # <-- change to 'docs' if Pages serves from /docs
+  PAGES_BRANCH: main        # ← change if your Pages branch is e.g. gh-pages
+  PAGES_DIR: .              # ← change to docs if Pages serves from /docs
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write               # needed to push with GITHUB_TOKEN
+
     steps:
       - name: Checkout Pages branch
         uses: actions/checkout@v4
         with:
           ref: ${{ env.PAGES_BRANCH }}
-          fetch-depth: 0            # we want history to commit cleanly
+          fetch-depth: 0
 
       - name: Debug: show branch & tree
+        shell: bash
         run: |
           echo "On branch: $(git rev-parse --abbrev-ref HEAD)"
-          echo "Repo root contents:"
-          ls -la
-          echo "PAGES_DIR contents:"
-          ls -la "${{ env.PAGES_DIR }}" || true
+          echo "Repo root contents:"; ls -la
+          echo "PAGES_DIR contents:"; ls -la "${{ env.PAGES_DIR }}" || true
 
       - name: Fetch fronts from SimplyPlural
+        shell: bash
         env:
-          SP_TOKEN: ${{ secrets.SP_TOKEN }}   # set this secret in repo settings
+          SP_TOKEN: ${{ secrets.SP_TOKEN }}
+          PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
           set -euo pipefail
-          test -n "${SP_TOKEN}" || (echo "ERROR: SP_TOKEN secret is not set" && exit 1)
+          test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
-          # fetch; capture HTTP status for clearer logs
           HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/fronts.json.tmp" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
             https://api.apparyllis.com/v1/fronters/)
           echo "Fetch HTTP status: ${HTTP_CODE}"
-          test "${HTTP_CODE}" = "200" || (echo "Non-200 from API; body:" && cat "${PAGES_DIR}/fronts.json.tmp" && exit 1)
+          if [ "${HTTP_CODE}" != "200" ]; then
+            echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/fronts.json.tmp"; exit 1
+          fi
           mv "${PAGES_DIR}/fronts.json.tmp" "${PAGES_DIR}/fronts.json"
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to ${PAGES_DIR}/fronts.json"
 
-      - name: Validate JSON (python)
-        run: |
-          python - << 'PY'
-          import json,sys,os
-          p = os.environ["PAGES_DIR"] + "/fronts.json"
-          with open(p) as f: json.load(f)
-          print("fronts.json is valid JSON")
-          PY
+      - name: Validate JSON
+        shell: bash
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
+        run: |
+          python -c "import json,sys; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('fronts.json is valid JSON')"
 
       - name: Commit and push if changed
+        shell: bash
+        env:
+          PAGES_BRANCH: ${{ env.PAGES_BRANCH }}
+          PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
           set -e
           git config user.name "github-actions[bot]"
