@@ -2,7 +2,7 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'   # every ~5 min
   workflow_dispatch: {}
 
 permissions:
@@ -11,7 +11,6 @@ permissions:
 env:
   PAGES_BRANCH: main
   PAGES_DIR: .
-  WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"   # <-- exact label text
 
 jobs:
   update:
@@ -39,11 +38,9 @@ jobs:
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
           PAGES_DIR: ${{ env.PAGES_DIR }}
-          WARNING_FIELD: ${{ env.WARNING_FIELD }}
         run: |
           set -euo pipefail
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
-          test -n "${WARNING_FIELD}" || { echo "ERROR: WARNING_FIELD env is empty"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
           # 1) Identify systemId
@@ -87,93 +84,84 @@ jobs:
             echo '[]' > "${PAGES_DIR}/fielddefs.json"
           fi
 
-          # 5) Join → fronts.json (with robust custom-fields extraction, no "warning")
+          # 5) Join → fronts.json (robust custom-fields extraction; no 'warning' key)
           jq -n \
             --argjson fh  "$(cat "${PAGES_DIR}/fh.json")" \
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
             --argjson fdef "$(cat "${PAGES_DIR}/fielddefs.json" 2>/dev/null || echo '[]')" \
             --arg lc "${LAST_CHANGE:-}" '
-# Build id -> label map from field definitions (multiple schema shapes supported)
-def to_label_map:
-  (reduce .[] as $d ({}; . + {
-    ($d.id // $d._id // $d.uuid // $d.name // ""):
-    ($d.name // $d.label // $d.title // "")
-  })) | with_entries(select(.key != "" and .value != ""));
+          # Build id -> label map from field definitions (multiple schema shapes supported)
+          def to_label_map:
+            (reduce .[] as $d ({}; . + {
+              ($d.id // $d._id // $d.uuid // $d.name // ""):
+              ($d.name // $d.label // $d.title // "")
+            })) | with_entries(select(.key != "" and .value != ""));
 
-# Convert an object {id->{name?,value?,...}} into uniform pairs
-def obj_pairs(o): (o // {}) | to_entries
-  | map({
-      id: .key,
-      raw: .value
-    });
+          # Convert an object {id->{name?,value?,...}} into uniform pairs
+          def obj_pairs(o): (o // {}) | to_entries
+            | map({ id: .key, raw: .value });
 
-# Normalize one {id,raw} pair into {label,value,private?,type?}
-def norm_pair($labels):
-  . as $p
-  | ( $labels[$p.id] // ($p.raw.name // $p.raw.label // $p.raw.title // $p.id) ) as $label
-  | ( if ($p.raw|type)=="object" then
-        ($p.raw.value // $p.raw.text // $p.raw.content // $p.raw.markdown // ($p.raw|del(.name,.label,.title,.private,.type)|tostring))
-      else
-        $p.raw
-      end
-    ) as $val
-  | {
-      label: ($label // ""),
-      value: ($val // ""),
-      private: ($p.raw.private // false),
-      type: ($p.raw.type // null)
-    }
-  | select((.label|tostring|length)>0 and (.value|tostring|length)>0);
-
-# Pull as many field sources as possible from a member content object
-def extract_fields($m; $labels):
-  # 1) Common object maps by id
-  ( obj_pairs($m.fields)
-  + obj_pairs($m.fieldValues)
-  + obj_pairs($m.fieldsValue)
-  + obj_pairs($m.values)
-  )
-  # 2) Array-shaped fields with {id?,name?,value?}
-  + ( ($m.fields // []) | map({ id: (.id // .name // .label // ""), raw: . }) )
-  # 3) Sections with title/content
-  + ( ($m.sections // []) | map({ id: (.id // .name // .title // ""), raw: { name: (.title // .name // .label // ""), value: (.content // .text // "") } }) )
-  # 4) Very old shapes sometimes stash a blob under .extra / .infoFields
-  + ( ($m.infoFields // []) | map({ id: (.id // .name // ""), raw: . }) )
-  + ( ($m.extra // {}) | to_entries | map({ id: .key, raw: .value }) )
-  # Normalize & clean
-  | map(norm_pair($labels))
-  | map(select(.value|tostring|gsub("^\\s+|\\s+$";"") != ""))
-  # Dedup by (label,value)
-  | unique_by(.label,.value);
-
-{
-  lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
-  membersFronting: (
-    $fh
-    | map(select(.content.live==true))
-    | map(.content.member)
-    | unique
-    | map(
-        . as $mid
-        | ( ($mem[] | select(.id==$mid) | .content) // null ) as $m
-        | if $m != null then
-            ( $fdef | to_label_map ) as $labels
-            | extract_fields($m; $labels) as $allFields
+          # Normalize one {id,raw} pair into {label,value,private?,type?}
+          def norm_pair($labels):
+            . as $p
+            | ( $labels[$p.id] // ($p.raw.name // $p.raw.label // $p.raw.title // $p.id) ) as $label
+            | ( if ($p.raw|type)=="object" then
+                  ($p.raw.value // $p.raw.text // $p.raw.content // $p.raw.markdown // ($p.raw|del(.name,.label,.title,.private,.type)|tostring))
+                else
+                  $p.raw
+                end
+              ) as $val
             | {
-                id: $mid,
-                displayName: $m.name,
-                pronouns: $m.pronouns,
-                avatar: $m.avatarUrl,
-                color: $m.color,
-                description: ($m.desc // $m.info // null),
-                fields: $allFields
+                label: ($label // ""),
+                value: ($val // ""),
+                private: ($p.raw.private // false),
+                type: ($p.raw.type // null)
               }
-          else
-            { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, description: null, fields: [] }
-          end
-      )
-  )
-}' > "${PAGES_DIR}/fronts.json"
+            | select((.label|tostring|length)>0 and (.value|tostring|length)>0);
+
+          # Pull as many field sources as possible from a member content object
+          def extract_fields($m; $labels):
+            ( obj_pairs($m.fields)
+            + obj_pairs($m.fieldValues)
+            + obj_pairs($m.fieldsValue)
+            + obj_pairs($m.values)
+            )
+            + ( ($m.fields // []) | map({ id: (.id // .name // .label // ""), raw: . }) )
+            + ( ($m.sections // []) | map({ id: (.id // .name // .title // ""), raw: { name: (.title // .name // .label // ""), value: (.content // .text // "") } }) )
+            + ( ($m.infoFields // []) | map({ id: (.id // .name // ""), raw: . }) )
+            + ( ($m.extra // {}) | to_entries | map({ id: .key, raw: .value }) )
+            | map(norm_pair($labels))
+            | map(select(.value|tostring|gsub("^\\s+|\\s+$";"") != ""))
+            | unique_by(.label,.value);
+
+          {
+            lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
+            membersFronting: (
+              $fh
+              | map(select(.content.live==true))
+              | map(.content.member)
+              | unique
+              | map(
+                  . as $mid
+                  | ( ($mem[] | select(.id==$mid) | .content) // null ) as $m
+                  | if $m != null then
+                      ( $fdef | to_label_map ) as $labels
+                      | extract_fields($m; $labels) as $allFields
+                      | {
+                          id: $mid,
+                          displayName: $m.name,
+                          pronouns: $m.pronouns,
+                          avatar: $m.avatarUrl,
+                          color: $m.color,
+                          description: ($m.desc // $m.info // null),
+                          fields: $allFields
+                        }
+                    else
+                      { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, description: null, fields: [] }
+                    end
+                )
+            )
+          }' > "${PAGES_DIR}/fronts.json"
 
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to fronts.json"
           head -c 400 "${PAGES_DIR}/fronts.json" || true; echo
