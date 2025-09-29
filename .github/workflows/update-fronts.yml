@@ -36,11 +36,10 @@ jobs:
       - name: Fetch fronters + members + field labels → fronts.json
         shell: bash
         env:
-          SP_TOKEN: ${{ secrets.SP_TOKEN }}
           PAGES_DIR: ${{ env.PAGES_DIR }}
+          SP_TOKEN: ${{ secrets.SP_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
           # ---------------- 1) systemId ----------------
@@ -206,12 +205,7 @@ jobs:
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          python - <<'PY'
-import json,sys
-j=json.load(open('${{ env.PAGES_DIR }}/fronts.json'))
-assert 'membersFronting' in j
-print('✅ fronts.json is valid; membersFronting:', len(j.get('membersFronting',[])))
-PY
+          python -c "import json,sys,io; p='${{ env.PAGES_DIR }}/fronts.json'; j=json.load(io.open(p,'r',encoding='utf-8')); assert isinstance(j,dict) and 'membersFronting' in j, 'fronts.json missing membersFronting'; print('✅ fronts.json is valid; membersFronting:', len(j.get('membersFronting',[])))"
 
       - name: Commit and push if changed
         shell: bash
@@ -222,6 +216,7 @@ PY
           set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin "${PAGES_BRANCH}" || true
           git add "${PAGES_DIR}/fronts.json"
           if git diff --cached --quiet; then
             echo "No changes to commit."
