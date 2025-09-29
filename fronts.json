@@ -1,15 +1,12 @@
-[
-  {
-    "content": {
-      "custom": false,
-      "customStatus": "",
-      "lastOperationTime": 1758314952951,
-      "live": true,
-      "member": "67c61f4818cd315d65d87ae4",
-      "startTime": 1758314953919,
-      "uid": "7cb7816704a223b4bc370ec2e24fd233becb5ff37572e6ba8679fcf93106ab8d"
-    },
-    "exists": true,
-    "id": "68cdc1c81ed834ec1f000000"
-  }
-]
+{
+  "lastChange": "57688-10-12T12:31:59Z",
+  "membersFronting": [
+    {
+      "color": null,
+      "displayName": null,
+      "id": "67c61f4818cd315d65d87ae4",
+      "name": null,
+      "uuid": null
+    }
+  ]
+}
