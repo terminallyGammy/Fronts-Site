@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every 5 min
+    - cron: '*/5 * * * *'   # every ~5 min
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main        # your Pages branch
-  PAGES_DIR: .              # change if using docs/ or similar
+  PAGES_BRANCH: main
+  PAGES_DIR: .
   WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
 
 jobs:
@@ -24,16 +24,16 @@ jobs:
           ref: ${{ env.PAGES_BRANCH }}
           fetch-depth: 0
 
-      - name: Debug repo state
+      - name: "Debug: show branch & tree"
         run: |
           echo "On branch: $(git rev-parse --abbrev-ref HEAD)"
-          ls -la
-          ls -la "${{ env.PAGES_DIR }}" || true
+          echo "Repo root contents:"; ls -la
+          echo "PAGES_DIR contents:"; ls -la "${{ env.PAGES_DIR }}" || true
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch fronters + members → fronts.json
+      - name: Fetch + normalize fronters → fronts.json
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
@@ -41,55 +41,61 @@ jobs:
           WARNING_FIELD: ${{ env.WARNING_FIELD }}
         run: |
           set -euo pipefail
+          test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          # --- 1) Get systemId from /v1/me
+          # --- A) Find systemId ---
           echo "→ /v1/me"
-          CODE=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
-            https://api.apparyllis.com/v1/me)
-          if [ "$CODE" != "200" ]; then
-            echo "Failed to get /me"; cat "${PAGES_DIR}/me.json"; exit 1
-          fi
-          USER_ID=$(jq -r '.id' "${PAGES_DIR}/me.json")
-          SYSTEM_ID=$(jq -r '.content.systemId // .content.uid' "${PAGES_DIR}/me.json")
-          if [ -z "$SYSTEM_ID" ] || [ "$SYSTEM_ID" = "null" ]; then
-            SYSTEM_ID="$USER_ID"
-          fi
-          echo "systemId=$SYSTEM_ID"
+          CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" \
+            -H "Accept: application/json" \
+            https://api.apparyllis.com/v1/me || true)
+          echo "HTTP ${CODE_ME}"
+          SYSTEM_ID=$(jq -r '.id // .content.uid // empty' "${PAGES_DIR}/me.json")
+          [ -n "${SYSTEM_ID}" ] || { echo "ERROR: systemId not found"; exit 1; }
+          echo "systemId=${SYSTEM_ID}"
 
-          # --- 2) Get current fronters
+          # --- B) Get fronters ---
           echo "→ /v1/fronters/"
-          CODE=$(curl -sS -o "${PAGES_DIR}/fronters.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
-            https://api.apparyllis.com/v1/fronters/)
-          if [ "$CODE" != "200" ]; then
-            echo "Failed to get fronters"; cat "${PAGES_DIR}/fronters.json"; exit 1
+          CODE_F=$(curl -sS -o "${PAGES_DIR}/fronters.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" \
+            -H "Accept: application/json" \
+            https://api.apparyllis.com/v1/fronters/ || true)
+          echo "HTTP ${CODE_F}"
+          if [ "${CODE_F}" != "200" ]; then
+            echo "ERROR fetching fronters"; cat "${PAGES_DIR}/fronters.json"; exit 1
           fi
 
-          # extract live member IDs
-          LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fronters.json")
-          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fronters.json")
-          : "${LAST_CHANGE:=}"
-
-          if [ -z "$LIVE_IDS" ]; then
-            echo '{"membersFronting":[],"lastChange":null}' | jq -S . > "${PAGES_DIR}/fronts.json"
+          # Direct format? Keep as-is.
+          if jq -e 'type=="object" and (.membersFronting|type=="array")' "${PAGES_DIR}/fronters.json" >/dev/null; then
+            jq -S . "${PAGES_DIR}/fronters.json" > "${PAGES_DIR}/fronts.json"
             exit 0
           fi
 
-          # --- 3) Get all members for system
-          echo "→ /v1/members/${SYSTEM_ID}"
-          CODE=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
-            "https://api.apparyllis.com/v1/members/${SYSTEM_ID}")
-          if [ "$CODE" != "200" ]; then
-            echo "Failed to get members"; cat "${PAGES_DIR}/members.json"; exit 1
+          # --- C) If history array, normalize ---
+          echo "Normalizing history → membersFronting…"
+          LIVE_IDS=$(jq '[ .[] | select(.content.live==true) | .content.member ] | unique' "${PAGES_DIR}/fronters.json")
+          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fronters.json")
+          : "${LAST_CHANGE:=}"
+
+          if [ "${LIVE_IDS}" = "[]" ]; then
+            echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
+            exit 0
           fi
 
-          # --- 4) Join live IDs with member info
-          jq -S --argjson ids "[${LIVE_IDS// /,}]" --arg WARN "$WARNING_FIELD" --arg lc "$LAST_CHANGE" '
+          echo "→ /v1/members/${SYSTEM_ID}"
+          CODE_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" \
+            -H "Accept: application/json" \
+            "https://api.apparyllis.com/v1/members/${SYSTEM_ID}" || true)
+          echo "HTTP ${CODE_MEM}"
+
+          if [ "${CODE_MEM}" != "200" ]; then
+            echo "Members fetch failed"; cat "${PAGES_DIR}/members.json"; exit 1
+          fi
+
+          jq -S --argjson ids "$LIVE_IDS" --arg WARN "$WARNING_FIELD" --arg lc "$LAST_CHANGE" '
             . as $members
-            | $ids as $ids
             | [ $members[] | select(.id as $id | $ids | index($id)) | {
                 id,
                 uuid: (.uuid // null),
@@ -106,16 +112,23 @@ jobs:
 
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to fronts.json"
 
+      - name: Show first 400 chars of fronts.json (debug)
+        run: |
+          head -c 400 "${PAGES_DIR}/fronts.json" || true
+          echo
+
       - name: Validate JSON
-        run: python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('✅ fronts.json is valid')"
+        run: |
+          python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('fronts.json is valid JSON')"
 
       - name: Commit and push if changed
         run: |
+          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${PAGES_DIR}/fronts.json"
           if git diff --cached --quiet; then
-            echo "No changes."
+            echo "No changes to commit."
             exit 0
           fi
           git commit -m "Update fronts.json [skip ci]"
