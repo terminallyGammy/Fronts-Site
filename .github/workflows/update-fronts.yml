@@ -34,108 +34,106 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Fetch + normalize fronters → fronts.json
-        shell: bash
-        env:
-          SP_TOKEN: ${{ secrets.SP_TOKEN }}
-          PAGES_DIR: ${{ env.PAGES_DIR }}
-          WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
-        run: |
-          set -euo pipefail
-          test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
-          mkdir -p "${PAGES_DIR}"
+  shell: bash
+  env:
+    SP_TOKEN: ${{ secrets.SP_TOKEN }}
+    PAGES_DIR: ${{ env.PAGES_DIR }}
+    WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
+  run: |
+    set -euo pipefail
+    test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
+    mkdir -p "${PAGES_DIR}"
 
-          # 1) Fetch /v1/fronters/
-          URL_FRONTERS="https://api.apparyllis.com/v1/fronters/"
-          echo "Fetching: $URL_FRONTERS"
-          HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/resp.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" \
-            -H "Accept: application/json" \
-            -H "Cache-Control: no-cache" \
-            "${URL_FRONTERS}")
-          echo "HTTP ${HTTP_CODE}"
-          if [ "${HTTP_CODE}" != "200" ]; then
-            echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/resp.json"; exit 1
-          fi
+    # 1) Fetch /v1/fronters/
+    URL_FRONTERS="https://api.apparyllis.com/v1/fronters/"
+    echo "Fetching: $URL_FRONTERS"
+    HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/resp.json" -w "%{http_code}" \
+      -H "Authorization: ${SP_TOKEN}" \
+      -H "Accept: application/json" \
+      -H "Cache-Control: no-cache" \
+      "${URL_FRONTERS}")
+    echo "HTTP ${HTTP_CODE}"
+    if [ "${HTTP_CODE}" != "200" ]; then
+      echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/resp.json"; exit 1
+    fi
 
-          # 2) If correct shape already -> pretty-print and save
-          if jq -e 'type == "object" and (.membersFronting | type=="array")' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
-            jq -S . "${PAGES_DIR}/resp.json" > "${PAGES_DIR}/fronts.json"
-            rm -f "${PAGES_DIR}/resp.json"
-            echo "Kept /v1/fronters/ object as-is."
-            exit 0
-          fi
+    # 2) If correct shape already -> pretty-print and save
+    if jq -e 'type == "object" and (.membersFronting | type=="array")' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
+      jq -S . "${PAGES_DIR}/resp.json" > "${PAGES_DIR}/fronts.json"
+      rm -f "${PAGES_DIR}/resp.json"
+      echo "Kept /v1/fronters/ object as-is."
+      exit 0
+    fi
 
-          # 3) If array (front-history), normalize by resolving each live member via /v1/member/{id}
-          if jq -e 'type == "array"' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
-            echo "Response is array (front-history). Normalizing via per-member lookups…"
+    # 3) If array (front-history), normalize by resolving each live member via /v1/member/{id}
+    if jq -e 'type == "array"' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
+      echo "Response is array (front-history). Normalizing via per-member lookups…"
 
-            LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/resp.json" || true)
-            LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/resp.json" || true)
-            : "${LAST_CHANGE:=}"
+      LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/resp.json" || true)
+      LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/resp.json" || true)
+      : "${LAST_CHANGE:=}"
 
-            echo '[]' > "${PAGES_DIR}/mf.json"
-            if [ -z "${LIVE_IDS}" ]; then
-              echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
-              rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json"
-              echo "No live members in history; wrote empty membersFronting."
-              exit 0
-            fi
+      echo '[]' > "${PAGES_DIR}/mf.json"
+      if [ -z "${LIVE_IDS}" ]; then
+        echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
+        rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json"
+        echo "No live members in history; wrote empty membersFronting."
+        exit 0
+      fi
 
-            for ID in ${LIVE_IDS}; do
-              MEM_URL="https://api.apparyllis.com/v1/member/${ID}"
-              echo "Resolving member: ${ID}"
-              CODE=$(curl -sS -o "${PAGES_DIR}/m.json" -w "%{http_code}" \
-                -H "Authorization: ${SP_TOKEN}" \
-                -H "Accept: application/json" \
-                -H "Cache-Control: no-cache" \
-                "${MEM_URL}" || true)
+      for ID in ${LIVE_IDS}; do
+        MEM_URL="https://api.apparyllis.com/v1/member/${ID}"
+        echo "Resolving member: ${ID}"
+        CODE=$(curl -sS -o "${PAGES_DIR}/m.json" -w "%{http_code}" \
+          -H "Authorization: ${SP_TOKEN}" \
+          -H "Accept: application/json" \
+          -H "Cache-Control: no-cache" \
+          "${MEM_URL}" || true)
 
-              if [ "${CODE}" = "200" ]; then
-                jq -S --arg WARN "${WARNING_FIELD}" '{
-                  id: (.id // "'${ID}'"),
-                  uuid: (.uuid // null),
-                  name: (.name // null),
-                  displayName: (.displayName // null),
-                  color: (.color // null),
-                  pronouns: (.pronouns // .pronoun // .prns // null),
-                  avatar: (
-                    .avatarUrl // .avatarURL // .avatar // .profilePictureUrl // .profileImageUrl // .imageUrl // null
-                  ),
-                  warning: (
-                    ((.fields // .customFields // [])
-                      | map({k:(.name // .key // ""), v:(.value // .val // null)}))
-                    | map(select(.k == $WARN))
-                    | (.[0].v // null)
-                  )
-                }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
-              else
-                echo "Member ${ID} returned ${CODE}; using minimal record."
-                echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "color": null, "pronouns": null, "avatar": null, "warning": null }' > "${PAGES_DIR}/one.json"
-              fi
+        if [ "${CODE}" = "200" ]; then
+          # Member JSON (as used by the app): name, pronouns, avatarUrl, color, info, fields: {label: value}
+          jq -S --arg WARN "${WARNING_FIELD}" '{
+            id: (.id // "'${ID}'"),
+            uuid: (.uuid // null),
+            # App uses "name" as the display label
+            name: (.name // null),
+            displayName: (.name // null),
+            pronouns: (.pronouns // null),
+            avatar: (.avatarUrl // null),
+            color: (.color // null),
+            info: (.info // null),
+            warning: (
+              (.fields[$WARN] // .customFields[$WARN] // null)
+            )
+          }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
+        else
+          echo "Member ${ID} returned ${CODE}; using minimal record."
+          echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "pronouns": null, "avatar": null, "color": null, "info": null, "warning": null }' > "${PAGES_DIR}/one.json"
+        fi
 
-              jq -S '. + [ input ]' "${PAGES_DIR}/mf.json" "${PAGES_DIR}/one.json" > "${PAGES_DIR}/newmf.json"
-              mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
-            done
+        jq -S '. + [ input ]' "${PAGES_DIR}/mf.json" "${PAGES_DIR}/one.json" > "${PAGES_DIR}/newmf.json"
+        mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
+      done
 
-            # convert milliseconds → seconds before todate
-            jq -S --arg lc "${LAST_CHANGE:-}" '{
-              membersFronting: .,
-              lastChange: (
-                $lc
-                | if .=="" then null
-                  else (try (tonumber / 1000 | todate) catch .)
-                  end
-              )
-            }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
+      # convert milliseconds → seconds before todate
+      jq -S --arg lc "${LAST_CHANGE:-}" '{
+        membersFronting: .,
+        lastChange: (
+          $lc
+          | if .=="" then null
+            else (try (tonumber / 1000 | todate) catch .)
+            end
+        )
+      }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
 
-            rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/one.json"
-            echo "Normalized history → membersFronting (via per-member lookups)."
-            exit 0
-          fi
+      rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/one.json"
+      echo "Normalized history → membersFronting (via per-member lookups)."
+      exit 0
+    fi
 
-          echo "Unexpected response shape:"
-          cat "${PAGES_DIR}/resp.json"
-          exit 1
+    echo "Unexpected response shape:"
+    cat "${PAGES_DIR}/resp.json"
+    exit 1
 
       - name: Show first 400 chars of fronts.json (debug)
         shell: bash
