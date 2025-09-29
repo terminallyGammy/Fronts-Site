@@ -71,20 +71,30 @@ jobs:
           ' "${PAGES_DIR}/fh.json")
           : "${LAST_CHANGE:=}"
 
-          # Derive current live fronters by taking the latest event per member and checking its live flag.
-          # This avoids empty results when the history contains multiple entries and not all have live==true.
+          # Derive current live fronters robustly:
+          # 1) Sort before group_by (jq requires pre-sorted input)
+          # 2) Latest-event-per-member AND direct live==true union (covers both shapes)
           LIVE_IDS=$(jq -r '
             def ts: (.content.lastOperationTime // .content.startTime // 0);
-            group_by(.content.member)
-            | map( max_by(ts) )                # latest event per member
-            | map(select(.content.live == true))
-            | map(.content.member)
-            | unique
-            | .[]?
+            ( . as $a
+              | ( $a
+                  | sort_by(.content.member, ts)
+                  | group_by(.content.member)
+                  | map( max_by(ts) )
+                  | map(select(.content.live == true))
+                  | map(.content.member)
+                ) as $latest
+              | ( $a
+                  | map(select(.content.live == true))
+                  | map(.content.member)
+                ) as $direct
+              | ( ($latest + $direct) | unique | .[]? )
+            )
           ' "${PAGES_DIR}/fh.json" || true)
 
-          echo "Live member IDs:"
-          printf "%s\n" ${LIVE_IDS:-} || true
+          # Build a proper JSON array from LIVE_IDS for reuse in jq (works even if empty)
+          IDS_JSON=$(printf '%s\n' ${LIVE_IDS:-} | jq -R . | jq -s .)
+          echo "Resolved live IDs JSON: ${IDS_JSON}"
 
           # -------- 3) members (full) --------
           echo "→ /v1/members/${SYSTEM_ID}"
@@ -99,7 +109,7 @@ jobs:
 
           # -------- 4) Discover field IDs from the *live members* --------
           # We look at (a) object keys AND (b) .name inside each object entry, because your tenant stores the fieldId in .name.
-          jq -r --argjson mem "$(cat "${PAGES_DIR}/members.json")" --argjson ids_json "$(printf '%s\n' ${LIVE_IDS:-} | jq -R . | jq -s .)" '
+          jq -r --argjson mem "$(cat "${PAGES_DIR}/members.json")" --argjson ids_json "${IDS_JSON:-[]}" '
             ($ids_json) as $ids
             | [ $mem[] | select($ids | index(.id)) | .content ] as $LM
             | [
@@ -152,7 +162,7 @@ jobs:
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
             --argjson fdef "$(cat "${PAGES_DIR}/fielddefs.json" 2>/dev/null || echo '[]')" \
             --arg lc "${LAST_CHANGE:-}" \
-            --argjson ids_json "$(printf '%s\n' ${LIVE_IDS:-} | jq -R . | jq -s .)" '
+            --argjson ids_json "${IDS_JSON:-[]}" '
           # Build id->label map (fallback to id when unknown)
           def to_label_map:
             (reduce .[] as $d ({}; . + { ($d.id // ""): ($d.name // "") }))
@@ -185,7 +195,21 @@ jobs:
           {
             lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
             membersFronting: (
-              ($ids_json) as $ids
+              # Prefer shell-computed IDs; if empty, recompute from $fh here as a fallback
+              (( ($ids_json // []) | if length>0 then . else (
+                  ($fh
+                   | ( . as $a
+                     | ( $a
+                         | sort_by(.content.member, (.content.lastOperationTime // .content.startTime // 0))
+                         | group_by(.content.member)
+                         | map( max_by(.content.lastOperationTime // .content.startTime // 0) )
+                         | map(select(.content.live == true))
+                         | map(.content.member)
+                       )
+                     + ( $a | map(select(.content.live==true)) | map(.content.member) )
+                     | unique )
+                  )
+                ) end ) ) as $ids
               | $ids
               | map(
                   . as $mid
