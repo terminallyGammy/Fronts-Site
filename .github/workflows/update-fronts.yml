@@ -61,11 +61,30 @@ jobs:
           echo "HTTP ${CODE_F}"
           [ "${CODE_F}" = "200" ] || { echo "Cannot get fronters"; head -c 400 "${PAGES_DIR}/fh.json" || true; exit 1; }
 
-          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json")
+          echo "First 400 chars of fh.json (debug):"
+          head -c 400 "${PAGES_DIR}/fh.json" || true; echo
+
+          # Compute lastChange (ms → ISO later)
+          LAST_CHANGE=$(jq -r '
+            [ .[] | .content.lastOperationTime?, .content.startTime? ]
+            | map(select(.!=null)) | max // empty
+          ' "${PAGES_DIR}/fh.json")
           : "${LAST_CHANGE:=}"
 
-          # live ids
-          LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fh.json" || true)
+          # Derive current live fronters by taking the latest event per member and checking its live flag.
+          # This avoids empty results when the history contains multiple entries and not all have live==true.
+          LIVE_IDS=$(jq -r '
+            def ts: (.content.lastOperationTime // .content.startTime // 0);
+            group_by(.content.member)
+            | map( max_by(ts) )                # latest event per member
+            | map(select(.content.live == true))
+            | map(.content.member)
+            | unique
+            | .[]?
+          ' "${PAGES_DIR}/fh.json" || true)
+
+          echo "Live member IDs:"
+          printf "%s\n" ${LIVE_IDS:-} || true
 
           # -------- 3) members (full) --------
           echo "→ /v1/members/${SYSTEM_ID}"
@@ -75,10 +94,13 @@ jobs:
           echo "HTTP ${CODE_MEM}"
           [ "${CODE_MEM}" = "200" ] || { echo "Cannot get members"; head -c 400 "${PAGES_DIR}/members.json" || true; exit 1; }
 
+          echo "First 400 chars of members.json (debug):"
+          head -c 400 "${PAGES_DIR}/members.json" || true; echo
+
           # -------- 4) Discover field IDs from the *live members* --------
           # We look at (a) object keys AND (b) .name inside each object entry, because your tenant stores the fieldId in .name.
-          jq -r --argjson mem "$(cat "${PAGES_DIR}/members.json")" --argjson fh "$(cat "${PAGES_DIR}/fh.json")" '
-            ($fh | map(select(.content.live==true)) | map(.content.member) | unique) as $ids
+          jq -r --argjson mem "$(cat "${PAGES_DIR}/members.json")" --argjson ids_json "$(printf '%s\n' ${LIVE_IDS:-} | jq -R . | jq -s .)" '
+            ($ids_json) as $ids
             | [ $mem[] | select($ids | index(.id)) | .content ] as $LM
             | [
                 # object maps: keys + nested .name
@@ -129,7 +151,8 @@ jobs:
             --argjson fh  "$(cat "${PAGES_DIR}/fh.json")" \
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
             --argjson fdef "$(cat "${PAGES_DIR}/fielddefs.json" 2>/dev/null || echo '[]')" \
-            --arg lc "${LAST_CHANGE:-}" '
+            --arg lc "${LAST_CHANGE:-}" \
+            --argjson ids_json "$(printf '%s\n' ${LIVE_IDS:-} | jq -R . | jq -s .)" '
           # Build id->label map (fallback to id when unknown)
           def to_label_map:
             (reduce .[] as $d ({}; . + { ($d.id // ""): ($d.name // "") }))
@@ -162,10 +185,8 @@ jobs:
           {
             lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
             membersFronting: (
-              $fh
-              | map(select(.content.live==true))
-              | map(.content.member)
-              | unique
+              ($ids_json) as $ids
+              | $ids
               | map(
                   . as $mid
                   | ( ($mem[] | select(.id==$mid) | .content) // null ) as $m
