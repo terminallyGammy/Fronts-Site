@@ -107,11 +107,46 @@ jobs:
           echo "First 400 chars of members.json (debug):"
           head -c 400 "${PAGES_DIR}/members.json" || true; echo
 
+          # -------- 3b) Ensure the live IDs are present; fetch missing ones per-member --------
+          # Compute which live IDs are not present in the bulk members list
+          MISSING_IDS=$(jq -r \
+            --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
+            --argjson ids "${IDS_JSON:-[]}" '
+            [ $mem[]?.id ] as $have
+            | [ $ids[] | select( ($have | index(.) ) | not ) ]
+            | .[]
+          ')
+          echo "Missing member IDs (will fetch individually):"
+          printf '%s\n' ${MISSING_IDS:-} || true
+          
+          # Build an array file to hold individually-fetched members (same outer shape as bulk list)
+          echo '[]' > "${PAGES_DIR}/members_extra.json"
+          for ID in ${MISSING_IDS:-}; do
+            URL_MEM="https://api.apparyllis.com/v1/member/${SYSTEM_ID}/${ID}"
+            echo "→ ${URL_MEM}"
+            CODE_ONE=$(curl -sS -o "${PAGES_DIR}/m_one.json" -w "%{http_code}" \
+              -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" "${URL_MEM}" || true)
+            if [ "${CODE_ONE}" = "200" ]; then
+              # Normalize to the same list-item shape: {"exists":true,"id":ID,"content":{...}}
+              jq -S --arg id "${ID}" '{ exists: true, id: $id, content: . }' "${PAGES_DIR}/m_one.json" > "${PAGES_DIR}/m_one.norm.json"
+              jq -S '. + [ input ]' "${PAGES_DIR}/members_extra.json" "${PAGES_DIR}/m_one.norm.json" > "${PAGES_DIR}/members_extra.new.json"
+              mv "${PAGES_DIR}/members_extra.new.json" "${PAGES_DIR}/members_extra.json"
+            else
+              echo "WARN: per-member fetch ${ID} failed (${CODE_ONE}); skipping."
+            fi
+          done
+          
+          echo "First 400 chars of members_extra.json (debug):"
+          head -c 400 "${PAGES_DIR}/members_extra.json" || true; echo
+
           # -------- 4) Discover field IDs from the *live members* --------
           # We look at (a) object keys AND (b) .name inside each object entry, because your tenant stores the fieldId in .name.
-          jq -r --argjson mem "$(cat "${PAGES_DIR}/members.json")" --argjson ids_json "${IDS_JSON:-[]}" '
+          jq -r \
+            --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
+            --argjson mem_extra "$(cat "${PAGES_DIR}/members_extra.json")" \
+            --argjson ids_json "${IDS_JSON:-[]}" '
             ($ids_json) as $ids
-            | [ $mem[] | select($ids | index(.id)) | .content ] as $LM
+            | [ ($mem + $mem_extra)[] | select($ids | index(.id)) | .content ] as $LM
             | [
                 # object maps: keys + nested .name
                 ($LM[] | (.fields       // {} | to_entries[]? | .key)),
@@ -160,6 +195,7 @@ jobs:
           jq -n \
             --argjson fh  "$(cat "${PAGES_DIR}/fh.json")" \
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
+            --argjson mem_extra "$(cat "${PAGES_DIR}/members_extra.json")" \
             --argjson fdef "$(cat "${PAGES_DIR}/fielddefs.json" 2>/dev/null || echo '[]')" \
             --arg lc "${LAST_CHANGE:-}" \
             --argjson ids_json "${IDS_JSON:-[]}" '
@@ -213,7 +249,7 @@ jobs:
               | $ids
               | map(
                   . as $mid
-                  | ( ($mem[] | select(.id==$mid) | .content) // null ) as $m
+                  | ( (($mem + $mem_extra)[] | select(.id==$mid) | .content) // null ) as $m
                   | if $m == null then
                       { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, description: null, fields: [] }
                     else
