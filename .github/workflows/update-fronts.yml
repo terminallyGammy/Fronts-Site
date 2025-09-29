@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'   # every ~5 min
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main
-  PAGES_DIR: .
+  PAGES_BRANCH: main        # change if your Pages branch is different (e.g., gh-pages)
+  PAGES_DIR: .              # change to docs if your site serves from /docs
 
 jobs:
   update:
@@ -46,14 +46,23 @@ jobs:
 
           hdr() { sed -n '1,40p' "$1" 2>/dev/null || true; }
 
-          # A) find userId and systemId
+          ###############################
+          # A) Find userId and systemId #
+          ###############################
           echo "→ /v1/me"
-          CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.txt" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" https://api.apparyllis.com/v1/me || true)
+          CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
+            https://api.apparyllis.com/v1/me || true)
           echo "HTTP ${CODE_ME}"
-          ME=$(cat "${PAGES_DIR}/me.txt"); echo "me: ${ME}"
-          [ "${CODE_ME}" = "200" ] || { echo "Cannot get /v1/me"; exit 1; }
-          USER_ID="${ME}"
+          [ "${CODE_ME}" = "200" ] || { echo "Cannot get /v1/me"; cat "${PAGES_DIR}/me.json" || true; exit 1; }
+
+          USER_ID=$(jq -r '.id // empty' "${PAGES_DIR}/me.json")
+          if [ -z "${USER_ID}" ] || [ "${USER_ID}" = "null" ]; then
+            echo "ERROR: could not parse user id from /v1/me"
+            cat "${PAGES_DIR}/me.json" || true
+            exit 1
+          fi
+          echo "userId=${USER_ID}"
 
           echo "→ /v1/user/${USER_ID}"
           CODE_USER=$(curl -sS -D "${PAGES_DIR}/user.hdr" -o "${PAGES_DIR}/user.json" -w "%{http_code}" \
@@ -65,13 +74,19 @@ jobs:
             echo "User body:"; head -c 400 "${PAGES_DIR}/user.json" || true; echo
             echo "ERROR: cannot get user to determine systemId"; exit 1
           fi
+
+          # Try common keys for the system id
           SYSTEM_ID=$(jq -r '(.systemId // .systemID // .system // .sid // empty)' "${PAGES_DIR}/user.json")
           if [ -z "${SYSTEM_ID}" ] || [ "${SYSTEM_ID}" = "null" ]; then
-            echo "ERROR: systemId not present in /v1/user response"; exit 1
+            echo "ERROR: systemId not present in /v1/user response"
+            head -c 400 "${PAGES_DIR}/user.json" || true; echo
+            exit 1
           fi
           echo "systemId=${SYSTEM_ID}"
 
-          # B) get current fronters
+          ###############################################
+          # B) Get current fronters (self or history)   #
+          ###############################################
           echo "→ /v1/fronters/"
           CODE_F=$(curl -sS -D "${PAGES_DIR}/fh.hdr" -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
@@ -83,7 +98,7 @@ jobs:
             echo "ERROR: cannot get fronters"; exit 1
           fi
 
-          # If already correct shape, keep as-is
+          # If API already returns the desired object shape, keep as-is.
           if jq -e 'type=="object" and (.membersFronting|type=="array")' "${PAGES_DIR}/fh.json" >/dev/null; then
             jq -S . "${PAGES_DIR}/fh.json" > "${PAGES_DIR}/fronts.json"
             rm -f "${PAGES_DIR}/fh.json"
@@ -91,7 +106,9 @@ jobs:
             exit 0
           fi
 
-          # C) normalize history -> membersFronting
+          #########################################################
+          # C) Normalize history → membersFronting via member API #
+          #########################################################
           echo "Normalizing history → membersFronting via per-member lookups…"
           LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fh.json" || true)
           LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json" || true)
@@ -114,6 +131,7 @@ jobs:
             if [ "${CODE_M}" != "200" ]; then
               echo "Headers:"; hdr "${PAGES_DIR}/m.hdr"
               echo "Body:"; head -c 400 "${PAGES_DIR}/m.json" || true; echo
+              # minimal fallback so the page still renders
               echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "pronouns": null, "avatar": null, "color": null, "info": null, "warning": null }' > "${PAGES_DIR}/one.json"
             else
               jq -S --arg WARN "${WARNING_FIELD}" '{
@@ -132,12 +150,16 @@ jobs:
             mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
           done
 
+          # Build final fronts.json (convert ms → s before todate)
           jq -S --arg lc "${LAST_CHANGE:-}" '{
             membersFronting: .,
-            lastChange: ( $lc | if .=="" then null else (try (tonumber / 1000 | todate) catch .) end )
+            lastChange: (
+              $lc
+              | if .=="" then null else (try (tonumber / 1000 | todate) catch .) end
+            )
           }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
 
-          rm -f "${PAGES_DIR}/fh.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/m.hdr" "${PAGES_DIR}/one.json"
+          rm -f "${PAGES_DIR}/fh.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/m.hdr" "${PAGES_DIR}/one.json" "${PAGES_DIR}/me.json" "${PAGES_DIR}/user.json" "${PAGES_DIR}/user.hdr"
           echo "Normalized history → membersFronting (via per-member lookups)."
 
       - name: Show first 400 chars of fronts.json (debug)
