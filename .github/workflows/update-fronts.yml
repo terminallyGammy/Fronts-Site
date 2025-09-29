@@ -30,7 +30,10 @@ jobs:
           echo "Repo root contents:"; ls -la
           echo "PAGES_DIR contents:"; ls -la "${{ env.PAGES_DIR }}" || true
 
-      - name: Fetch fronts from SimplyPlural
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Fetch + normalize fronters → fronts.json
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
@@ -39,15 +42,100 @@ jobs:
           set -euo pipefail
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
-          HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/fronts.json.tmp" -w "%{http_code}" \
+
+          # 1) Fetch "fronters"
+          URL_FRONTERS="https://api.apparyllis.com/v1/fronters/"
+          echo "Fetching: $URL_FRONTERS"
+          HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/resp.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
-            https://api.apparyllis.com/v1/fronters/)
-          echo "Fetch HTTP status: ${HTTP_CODE}"
+            -H "Accept: application/json" \
+            -H "Cache-Control: no-cache" \
+            "${URL_FRONTERS}")
+          echo "HTTP ${HTTP_CODE}"
           if [ "${HTTP_CODE}" != "200" ]; then
-            echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/fronts.json.tmp"; exit 1
+            echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/resp.json"; exit 1
           fi
-          mv "${PAGES_DIR}/fronts.json.tmp" "${PAGES_DIR}/fronts.json"
-          echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to ${PAGES_DIR}/fronts.json"
+
+          # 2) If we already got the right shape (object with membersFronting), just pretty-print and save.
+          if jq -e 'type == "object" and (.membersFronting | type=="array")' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
+            jq -S . "${PAGES_DIR}/resp.json" > "${PAGES_DIR}/fronts.json"
+            rm -f "${PAGES_DIR}/resp.json"
+            echo "Kept /v1/fronters/ object as-is."
+            exit 0
+          fi
+
+          # 3) If we got an array (history), normalize it.
+          if jq -e 'type == "array"' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
+            echo "Response is array (front-history). Normalizing…"
+
+            # 3a) Extract unique live member IDs and latest timestamp from the history array
+            LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/resp.json" || true)
+            LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/resp.json" || true)
+            : "${LAST_CHANGE:=}"  # default empty
+
+            if [ -z "${LIVE_IDS}" ]; then
+              echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
+              rm -f "${PAGES_DIR}/resp.json"
+              echo "No live members in history; wrote empty membersFronting."
+              exit 0
+            fi
+
+            # 3b) Fetch members (self). Some deployments use /v1/members/, others /v1/members/self.
+            # Try /v1/members/ first; if non-200, try /v1/members/self
+            MEMBERS_URL="https://api.apparyllis.com/v1/members/"
+            echo "Fetching members: $MEMBERS_URL"
+            HTTP_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
+              -H "Authorization: ${SP_TOKEN}" \
+              -H "Accept: application/json" \
+              -H "Cache-Control: no-cache" \
+              "${MEMBERS_URL}" || true)
+            if [ "${HTTP_MEM}" != "200" ]; then
+              MEMBERS_URL="https://api.apparyllis.com/v1/members/self"
+              echo "Retry members: $MEMBERS_URL"
+              HTTP_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
+                -H "Authorization: ${SP_TOKEN}" \
+                -H "Accept: application/json" \
+                -H "Cache-Control: no-cache" \
+                "${MEMBERS_URL}" || true)
+              [ "${HTTP_MEM}" = "200" ] || { echo "Members fetch failed (${HTTP_MEM})"; cat "${PAGES_DIR}/members.json"; exit 1; }
+            fi
+
+            # 3c) Build membersFronting by matching IDs against the members list
+            # Build a JSON array ["id1","id2",...] for jq
+            IDS_JSON=$(printf '%s\n' ${LIVE_IDS} | jq -R . | jq -s .)
+
+            jq -S --argjson ids "${IDS_JSON}" --arg lastChange "${LAST_CHANGE:-}" '
+              # make a map id -> member object
+              ( . as $all
+              | reduce .[] as $m ({}; .[$m.id] = {
+                  id: $m.id,
+                  uuid: ($m.uuid // null),
+                  name: ($m.name // null),
+                  displayName: ($m.displayName // null),
+                  color: ($m.color // null)
+                })
+              ) as $map
+              | {
+                  membersFronting: ( $ids | map( $map[.] ) | map(select(. != null)) ),
+                  lastChange: ( $lastChange | if . == "" then null else (try (tonumber | todate) catch .) end )
+                }
+            ' "${PAGES_DIR}/members.json" > "${PAGES_DIR}/fronts.json"
+
+            rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/members.json"
+            echo "Normalized history → membersFronting."
+            exit 0
+          fi
+
+          echo "Unexpected response shape:"
+          cat "${PAGES_DIR}/resp.json"
+          exit 1
+
+      - name: Show first 400 chars of fronts.json (debug)
+        shell: bash
+        env:
+          PAGES_DIR: ${{ env.PAGES_DIR }}
+        run: |
+          head -c 400 "${PAGES_DIR}/fronts.json" || true; echo
 
       - name: Validate JSON
         shell: bash
