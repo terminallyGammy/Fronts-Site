@@ -30,7 +30,7 @@ jobs:
           echo "Repo root contents:"; ls -la
           echo "PAGES_DIR contents:"; ls -la "${{ env.PAGES_DIR }}" || true
 
-      - name: Fetch fronts from SimplyPlural
+      - name: Fetch current fronters (self) → fronts.json
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
@@ -38,15 +38,25 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
+          URL="https://api.apparyllis.com/v1/fronters/"
+          echo "Fetching: $URL"
           mkdir -p "${PAGES_DIR}"
-          HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/fronts.json.tmp" -w "%{http_code}" \
+          HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/fronts.raw.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
-            https://api.apparyllis.com/v1/fronters/)
-          echo "Fetch HTTP status: ${HTTP_CODE}"
+            -H "Accept: application/json" \
+            -H "Cache-Control: no-cache" \
+            "${URL}")
+          echo "HTTP ${HTTP_CODE}"
           if [ "${HTTP_CODE}" != "200" ]; then
-            echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/fronts.json.tmp"; exit 1
+            echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/fronts.raw.json"; exit 1
           fi
-          mv "${PAGES_DIR}/fronts.json.tmp" "${PAGES_DIR}/fronts.json"
+          # If we accidentally got front-history (array) instead of fronters (object), warn loudly.
+          if jq -e 'type == "array"' "${PAGES_DIR}/fronts.raw.json" >/dev/null; then
+            echo "WARNING: Response is an ARRAY (front history), not /v1/fronters/. Check the URL above and your workflow."
+          fi
+          # Pretty-print deterministically
+          jq -S . "${PAGES_DIR}/fronts.raw.json" > "${PAGES_DIR}/fronts.json"
+          rm -f "${PAGES_DIR}/fronts.raw.json"
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to ${PAGES_DIR}/fronts.json"
 
       - name: Validate JSON
