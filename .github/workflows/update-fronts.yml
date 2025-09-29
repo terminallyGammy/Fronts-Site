@@ -44,93 +44,99 @@ jobs:
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          # 1) Fetch /v1/fronters/
-          URL_FRONTERS="https://api.apparyllis.com/v1/fronters/"
-          echo "Fetching: $URL_FRONTERS"
-          HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/resp.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" \
-            -H "Accept: application/json" \
-            -H "Cache-Control: no-cache" \
-            "${URL_FRONTERS}")
-          echo "HTTP ${HTTP_CODE}"
-          if [ "${HTTP_CODE}" != "200" ]; then
-            echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/resp.json"; exit 1
+          hdr() { sed -n '1,40p' "$1" 2>/dev/null || true; }
+
+          # --- A) Find userId and systemId ---
+          echo "→ /v1/me"
+          CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.txt" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" https://api.apparyllis.com/v1/me || true)
+          echo "HTTP ${CODE_ME}"
+          ME=$(cat "${PAGES_DIR}/me.txt"); echo "me: ${ME}"
+          [ "${CODE_ME}" = "200" ] || { echo "Cannot get /v1/me"; exit 1; }
+          USER_ID="${ME}"
+
+          echo "→ /v1/user/${USER_ID}"
+          CODE_USER=$(curl -sS -D "${PAGES_DIR}/user.hdr" -o "${PAGES_DIR}/user.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
+            "https://api.apparyllis.com/v1/user/${USER_ID}" || true)
+          echo "HTTP ${CODE_USER}"
+          if [ "${CODE_USER}" != "200" ]; then
+            echo "User headers:"; hdr "${PAGES_DIR}/user.hdr"
+            echo "User body:"; head -c 400 "${PAGES_DIR}/user.json" || true; echo
+            echo "ERROR: cannot get user to determine systemId"; exit 1
+          fi
+          SYSTEM_ID=$(jq -r '(.systemId // .systemID // .system // .sid // empty)' "${PAGES_DIR}/user.json")
+          if [ -z "${SYSTEM_ID}" ] || [ "${SYSTEM_ID}" = "null" ]; then
+            echo "ERROR: systemId not present in /v1/user response"; exit 1
+          fi
+          echo "systemId=${SYSTEM_ID}"
+
+          # --- B) Get current fronters ---
+          echo "→ /v1/fronters/"
+          CODE_F=$(curl -sS -D "${PAGES_DIR}/fh.hdr" -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
+            https://api.apparyllis.com/v1/fronters/ || true)
+          echo "HTTP ${CODE_F}"
+          if [ "${CODE_F}" != "200" ]; then
+            echo "Fronters headers:"; hdr "${PAGES_DIR}/fh.hdr"
+            echo "Fronters body:"; head -c 400 "${PAGES_DIR}/fh.json" || true; echo
+            echo "ERROR: cannot get fronters"; exit 1
           fi
 
-          # 2) If correct shape already -> pretty-print and save
-          if jq -e 'type == "object" and (.membersFronting | type=="array")' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
-            jq -S . "${PAGES_DIR}/resp.json" > "${PAGES_DIR}/fronts.json"
-            rm -f "${PAGES_DIR}/resp.json"
+          if jq -e 'type=="object" and (.membersFronting|type=="array")' "${PAGES_DIR}/fh.json" >/dev/null; then
+            jq -S . "${PAGES_DIR}/fh.json" > "${PAGES_DIR}/fronts.json"
+            rm -f "${PAGES_DIR}/fh.json"
             echo "Kept /v1/fronters/ object as-is."
             exit 0
           fi
 
-          # 3) If array (front-history), normalize by resolving each live member via /v1/member/{id}
-          if jq -e 'type == "array"' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
-            echo "Response is array (front-history). Normalizing via per-member lookups…"
+          echo "Normalizing history → membersFronting via per-member lookups…"
+          LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fh.json" || true)
+          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json" || true)
+          : "${LAST_CHANGE:=}"
 
-            LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/resp.json" || true)
-            LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/resp.json" || true)
-            : "${LAST_CHANGE:=}"
-
-            echo '[]' > "${PAGES_DIR}/mf.json"
-            if [ -z "${LIVE_IDS}" ]; then
-              echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
-              rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json"
-              echo "No live members in history; wrote empty membersFronting."
-              exit 0
-            fi
-
-            for ID in ${LIVE_IDS}; do
-              MEM_URL="https://api.apparyllis.com/v1/member/${ID}"
-              echo "Resolving member: ${ID}"
-              CODE=$(curl -sS -o "${PAGES_DIR}/m.json" -w "%{http_code}" \
-                -H "Authorization: ${SP_TOKEN}" \
-                -H "Accept: application/json" \
-                -H "Cache-Control: no-cache" \
-                "${MEM_URL}" || true)
-
-              if [ "${CODE}" = "200" ]; then
-                # Member JSON (per app): name, pronouns, avatarUrl, color, info, fields: {label: value}
-                jq -S --arg WARN "${WARNING_FIELD}" '{
-                  id: (.id // "'${ID}'"),
-                  uuid: (.uuid // null),
-                  name: (.name // null),
-                  displayName: (.name // null),
-                  pronouns: (.pronouns // null),
-                  avatar: (.avatarUrl // null),
-                  color: (.color // null),
-                  info: (.info // null),
-                  warning: ( .fields[$WARN] // .customFields[$WARN] // null )
-                }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
-              else
-                echo "Member ${ID} returned ${CODE}; using minimal record."
-                echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "pronouns": null, "avatar": null, "color": null, "info": null, "warning": null }' > "${PAGES_DIR}/one.json"
-              fi
-
-              jq -S '. + [ input ]' "${PAGES_DIR}/mf.json" "${PAGES_DIR}/one.json" > "${PAGES_DIR}/newmf.json"
-              mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
-            done
-
-            # Convert milliseconds → seconds before todate
-            jq -S --arg lc "${LAST_CHANGE:-}" '{
-              membersFronting: .,
-              lastChange: (
-                $lc
-                | if .=="" then null
-                  else (try (tonumber / 1000 | todate) catch .)
-                  end
-              )
-            }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
-
-            rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/one.json"
-            echo "Normalized history → membersFronting (via per-member lookups)."
+          echo '[]' > "${PAGES_DIR}/mf.json"
+          if [ -z "${LIVE_IDS}" ]; then
+            echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
+            rm -f "${PAGES_DIR}/fh.json" "${PAGES_DIR}/mf.json"
+            echo "No live members in history; wrote empty membersFronting."
             exit 0
           fi
 
-          echo "Unexpected response shape:"
-          cat "${PAGES_DIR}/resp.json"
-          exit 1
+          for ID in ${LIVE_IDS}; do
+            MEM_URL="https://api.apparyllis.com/v1/member/${SYSTEM_ID}/${ID}"
+            echo "→ ${MEM_URL}"
+            CODE_M=$(curl -sS -D "${PAGES_DIR}/m.hdr" -o "${PAGES_DIR}/m.json" -w "%{http_code}" \
+              -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" "${MEM_URL}" || true)
+            echo "member ${ID} → HTTP ${CODE_M}"
+            if [ "${CODE_M}" != "200" ]; then
+              echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "pronouns": null, "avatar": null, "color": null, "info": null, "warning": null }' > "${PAGES_DIR}/one.json"
+            else
+              jq -S --arg WARN "${WARNING_FIELD}" '{
+                id: (.id // "'${ID}'"),
+                uuid: (.uuid // null),
+                name: (.name // null),
+                displayName: (.name // null),
+                pronouns: (.pronouns // null),
+                avatar: (.avatarUrl // null),
+                color: (.color // null),
+                info: (.info // null),
+                warning: ( .fields[$WARN] // .customFields[$WARN] // null )
+              }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
+            fi
+            jq -S '. + [ input ]' "${PAGES_DIR}/mf.json" "${PAGES_DIR}/one.json" > "${PAGES_DIR}/newmf.json"
+            mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
+          done
+
+          jq -S --arg lc "${LAST_CHANGE:-}" '{
+            membersFronting: .,
+            lastChange: (
+              $lc | if .=="" then null else (try (tonumber / 1000 | todate) catch .) end
+            )
+          }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
+
+          rm -f "${PAGES_DIR}/fh.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/m.hdr" "${PAGES_DIR}/one.json"
+          echo "Normalized history → membersFronting (via per-member lookups)."
 
       - name: Show first 400 chars of fronts.json (debug)
         shell: bash
