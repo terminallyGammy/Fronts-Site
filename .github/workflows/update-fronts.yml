@@ -93,36 +93,46 @@ jobs:
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
             --arg lc "${LAST_CHANGE:-}" \
             --arg WARNING_FIELD "${WARNING_FIELD}" '
-            {
-              lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
-              membersFronting: (
-                $fh
-                | map(select(.content.live==true))
-                | map(.content.member)
-                | unique
-                | map(
-                    . as $mid
-                    | ( ( $mem[] | select(.id==$mid) | .content ) // null ) as $m
-                    | if $m != null then
-                        {
-                          id: $mid,
-                          displayName: $m.name,
-                          pronouns: $m.pronouns,
-                          avatar: $m.avatarUrl,
-                          color: $m.color,
-                          warning: (
-                            ($m.fields // {})
-                            | to_entries
-                            | map(select(.value.name == $WARNING_FIELD) | .value.value)
-                            | first // null
-                          )
-                        }
-                      else
-                        { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, warning: null }
-                      end
-                  )
-              )
-            }' > "${PAGES_DIR}/fronts.json"
+{
+  lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
+  membersFronting: (
+    $fh
+    | map(select(.content.live==true))
+    | map(.content.member)
+    | unique
+    | map(
+        . as $mid
+        | ( ( $mem[] | select(.id==$mid) | .content ) // null ) as $m
+        | if $m != null then
+            # build fields array and pick WARNING
+            ( ($m.fields // {}) | to_entries
+              | map({
+                  label: (.value.name // null),
+                  value: (.value.value // null),
+                  private: (.value.private // false),
+                  type: (.value.type // null)
+                })
+            ) as $allFields
+            | {
+                id: $mid,
+                displayName: $m.name,
+                pronouns: $m.pronouns,
+                avatar: $m.avatarUrl,
+                color: $m.color,
+                description: ($m.desc // $m.info // null),
+                fields: $allFields,
+                warning: (
+                  $allFields
+                  | map(select(.label == $WARNING_FIELD) | .value)
+                  | first // null
+                )
+              }
+          else
+            { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, description: null, fields: [], warning: null }
+          end
+      )
+  )
+}' > "${PAGES_DIR}/fronts.json"
 
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to fronts.json"
 
