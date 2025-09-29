@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main        # change if your Pages branch is different
+  PAGES_BRANCH: main        # change if your Pages branch is different (e.g., gh-pages)
   PAGES_DIR: .              # change to docs if your site serves from /docs
 
 jobs:
@@ -64,60 +64,53 @@ jobs:
             exit 0
           fi
 
-          # 3) If array (front-history), normalize to {membersFronting: [...], lastChange: ...}
+          # 3) If array (front-history), normalize by resolving each live member via /v1/member/{id}
           if jq -e 'type == "array"' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
-            echo "Response is array (front-history). Normalizing…"
+            echo "Response is array (front-history). Normalizing via per-member lookups…"
 
             LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/resp.json" || true)
             LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/resp.json" || true)
             : "${LAST_CHANGE:=}"
 
+            echo '[]' > "${PAGES_DIR}/mf.json"
             if [ -z "${LIVE_IDS}" ]; then
               echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
-              rm -f "${PAGES_DIR}/resp.json"
+              rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json"
               echo "No live members in history; wrote empty membersFronting."
               exit 0
             fi
 
-            # Try members endpoints: /v1/members/ then /v1/members/self
-            MEMBERS_URL="https://api.apparyllis.com/v1/members/"
-            echo "Fetching members: $MEMBERS_URL"
-            HTTP_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
-              -H "Authorization: ${SP_TOKEN}" \
-              -H "Accept: application/json" \
-              -H "Cache-Control: no-cache" \
-              "${MEMBERS_URL}" || true)
-            if [ "${HTTP_MEM}" != "200" ]; then
-              MEMBERS_URL="https://api.apparyllis.com/v1/members/self"
-              echo "Retry members: $MEMBERS_URL"
-              HTTP_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
+            for ID in ${LIVE_IDS}; do
+              MEM_URL="https://api.apparyllis.com/v1/member/${ID}"
+              echo "Resolving member: ${ID}"
+              CODE=$(curl -sS -o "${PAGES_DIR}/m.json" -w "%{http_code}" \
                 -H "Authorization: ${SP_TOKEN}" \
                 -H "Accept: application/json" \
                 -H "Cache-Control: no-cache" \
-                "${MEMBERS_URL}" || true)
-              [ "${HTTP_MEM}" = "200" ] || { echo "Members fetch failed (${HTTP_MEM})"; cat "${PAGES_DIR}/members.json"; exit 1; }
-            fi
+                "${MEM_URL}" || true)
+              if [ "${CODE}" = "200" ]; then
+                jq -S '{
+                  id: (.id // "'${ID}'"),
+                  uuid: (.uuid // null),
+                  name: (.name // null),
+                  displayName: (.displayName // null),
+                  color: (.color // null)
+                }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
+              else
+                echo "Member ${ID} returned ${CODE}; using minimal record."
+                echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "color": null }' > "${PAGES_DIR}/one.json"
+              fi
+              jq -S '. + [ input ]' "${PAGES_DIR}/mf.json" "${PAGES_DIR}/one.json" > "${PAGES_DIR}/newmf.json"
+              mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
+            done
 
-            IDS_JSON=$(printf '%s\n' ${LIVE_IDS} | jq -R . | jq -s .)
+            jq -S --arg lc "${LAST_CHANGE:-}" '{
+              membersFronting: .,
+              lastChange: ( $lc | if .=="" then null else (try (tonumber | todate) catch .) end )
+            }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
 
-            jq -S --argjson ids "${IDS_JSON}" --arg lastChange "${LAST_CHANGE:-}" '
-              ( . as $all
-              | reduce .[] as $m ({}; .[$m.id] = {
-                  id: $m.id,
-                  uuid: ($m.uuid // null),
-                  name: ($m.name // null),
-                  displayName: ($m.displayName // null),
-                  color: ($m.color // null)
-                })
-              ) as $map
-              | {
-                  membersFronting: ( $ids | map( $map[.] ) | map(select(. != null)) ),
-                  lastChange: ( $lastChange | if . == "" then null else (try (tonumber | todate) catch .) end )
-                }
-            ' "${PAGES_DIR}/members.json" > "${PAGES_DIR}/fronts.json"
-
-            rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/members.json"
-            echo "Normalized history → membersFronting."
+            rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/one.json"
+            echo "Normalized history → membersFronting (via per-member lookups)."
             exit 0
           fi
 
