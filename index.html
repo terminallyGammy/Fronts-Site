@@ -57,60 +57,63 @@
   <div class="note" id="meta"></div>
 
   <script>
-    function fmtDate(x) {
-      if (!x) return "";
-      const n = Number(x);
-      const d = Number.isFinite(n) ? new Date(n > 1e12 ? n : n * 1000) : new Date(String(x));
-      return isNaN(+d) ? "" : d.toLocaleString();
-    }
-    function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function fmtDate(x) {
+    if (!x) return "";
+    const n = Number(x);
+    const d = Number.isFinite(n) ? new Date(n > 1e12 ? n : n * 1000) : new Date(String(x));
+    return isNaN(+d) ? "" : d.toLocaleString();
+  }
+  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-    async function loadFronts() {
-      const out = document.getElementById("fronts");
-      const meta = document.getElementById("meta");
+  async function loadFronts() {
+    const out = document.getElementById("fronts");
+    const meta = document.getElementById("meta");
 
-      try {
-        const res = await fetch("./fronts.json", { cache: "no-store" });
-        const raw = await res.text();
-        if (!res.ok) { out.textContent = "Error loading fronts."; console.error(res.status, raw); return; }
+    try {
+      const res = await fetch("./fronts.json", { cache: "no-store" });
+      const raw = await res.text();
+      if (!res.ok) { out.textContent = "Error loading fronts."; console.error(res.status, raw); return; }
 
-        let data; try { data = JSON.parse(raw); } catch { out.textContent="Error loading fronts."; console.error("Invalid JSON", raw); return; }
+      let data; try { data = JSON.parse(raw); } catch { out.textContent="Error loading fronts."; console.error("Invalid JSON", raw); return; }
 
-        if (!data || Array.isArray(data) || !Array.isArray(data.membersFronting)) {
-          out.textContent = "No one fronting right now."; meta.textContent = ""; return;
-        }
-        const arr = data.membersFronting;
-
-        if (arr.length === 0) {
-          out.textContent = "No one fronting right now.";
-        } else {
-          out.innerHTML = arr.map(m => {
-            const name = m.displayName || m.name || m.id || "Unnamed";
-            const pronouns = m.pronouns ? ` (${esc(m.pronouns)})` : "";
-            const color = m.color || "#ddd";
-            const avatar = m.avatar || ""; // may be empty if privacy blocks images
-            const warning = m.warning || "";
-
-            return `
-              <div class="front" style="border-left: 8px solid ${color};">
-                ${avatar ? `<img class="avatar" src="${esc(avatar)}" alt="" loading="lazy" />`
-                         : `<div class="avatar"></div>`}
-                <div>
-                  <div class="title">${esc(name)}${pronouns}</div>
-                </div>
-                ${warning ? `<div class="warning">${esc(warning)}</div>` : ""}
-              </div>
-            `;
-          }).join("");
-        }
-
-        meta.textContent = data.lastChange ? ("Last change: " + fmtDate(data.lastChange)) : "";
-      } catch (err) {
-        out.textContent = "Error loading fronts.";
-        console.error(err);
+      if (!data || Array.isArray(data) || !Array.isArray(data.membersFronting)) {
+        out.textContent = "No one fronting right now."; meta.textContent = ""; return;
       }
+      const arr = data.membersFronting;
+
+      if (arr.length === 0) {
+        out.textContent = "No one fronting right now.";
+      } else {
+        out.innerHTML = arr.map(m => {
+          const name = m.displayName || m.name || m.id || "Unnamed";
+          const pronouns = m.pronouns ? ` (${esc(m.pronouns)})` : "";
+          const color = m.color || "#ddd";
+          const avatar = m.avatar || "";
+          const info = m.info ? `<div class="subtle">${esc(m.info)}</div>` : "";
+          const warning = m.warning ? `<div class="warning">${esc(m.warning)}</div>` : "";
+
+          return `
+            <div class="front" style="border-left: 8px solid ${color};">
+              ${avatar ? `<img class="avatar" src="${esc(avatar)}" alt="" loading="lazy" />`
+                       : `<div class="avatar"></div>`}
+              <div>
+                <div class="title">${esc(name)}${pronouns}</div>
+                ${info}
+              </div>
+              ${warning}
+            </div>
+          `;
+        }).join("");
+      }
+
+      meta.textContent = data.lastChange ? ("Last change: " + fmtDate(data.lastChange)) : "";
+    } catch (err) {
+      out.textContent = "Error loading fronts.";
+      console.error(err);
     }
-    loadFronts();
-  </script>
+  }
+  loadFronts();
+</script>
+
 </body>
 </html>
