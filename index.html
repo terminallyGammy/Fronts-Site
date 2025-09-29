@@ -29,56 +29,37 @@
   <div class="note" id="meta"></div>
 
   <script>
-    // Set window.SP_TOKEN before this script runs to authorize requests.
-    async function fetchFronters() {
-      const token = window.SP_TOKEN || "";
-      if (!token) {
-        throw new Error("SP_TOKEN not set");
-      }
-
-      const upstream = await fetch("https://api.apparyllis.com/v1/fronters/", {
-        headers: { Authorization: token }
-      });
-
-      const text = await upstream.text();
-      if (!upstream.ok) {
-        throw new Error(`Proxy error ${upstream.status}: ${text}`);
-      }
-
-      try {
-        return JSON.parse(text);
-      } catch (e) {
-        console.warn("Unexpected non-JSON response", e);
-        return {};
-      }
-    }
-
     async function loadFronts() {
       const out = document.getElementById("fronts");
       const meta = document.getElementById("meta");
-      try {
-        const data = await fetchFronters();
-        console.log(data); // 👈 check console to see raw response
 
-        if (!data?.membersFronting?.length) {
-          out.textContent = "No one fronting right now.";
-          if (data?.lastChange) {
-            meta.textContent = "Last change: " + new Date(data.lastChange).toLocaleString();
-          }
+      try {
+        const res = await fetch("./fronts.json", { cache: "no-store" });
+        const raw = await res.text();
+
+        if (!res.ok) {
+          out.textContent = "Error loading fronts.";
+          console.error("HTTP", res.status, res.statusText, raw.slice(0, 200));
           return;
         }
 
-        out.innerHTML = data.membersFronting
-          .map(m => `
-        <div class="front" style="border-left: 8px solid ${m.color || "#ddd"};">
-          ${m.displayName || m.name || "Unnamed"}
-        </div>
-      `)
-          .join("");
+        let data;
+        try { data = JSON.parse(raw); }
+        catch { out.textContent = "Error loading fronts."; console.error("Invalid JSON:", raw.slice(0, 200)); return; }
 
-        if (data?.lastChange) {
-          meta.textContent = "Last change: " + new Date(data.lastChange).toLocaleString();
+        if (!Array.isArray(data?.membersFronting) || data.membersFronting.length === 0) {
+          out.textContent = "No one fronting right now.";
+          meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
+          return;
         }
+
+        out.innerHTML = data.membersFronting.map(m => `
+          <div class="front" style="border-left: 8px solid ${m.color || "#ddd"};">
+            ${m.displayName || m.name || "Unnamed"}
+          </div>
+        `).join("");
+
+        meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
       } catch (err) {
         out.textContent = "Error loading fronts.";
         console.error(err);
