@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'     # every ~5 min
+    - cron: '*/5 * * * *'   # every ~5 min
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main          # ← set to your Pages branch (e.g., gh-pages)
-  PAGES_DIR: .                # ← set to 'docs' if your site serves from /docs
+  PAGES_BRANCH: main        # change if your Pages branch is different
+  PAGES_DIR: .              # change to docs if your site serves from /docs
 
 jobs:
   update:
@@ -27,14 +27,13 @@ jobs:
         shell: bash
         run: |
           echo "On branch: $(git rev-parse --abbrev-ref HEAD)"
-          echo "GitHub Pages is expected at: branch='${{ env.PAGES_BRANCH }}' dir='${{ env.PAGES_DIR }}'"
           echo "Repo root contents:"; ls -la
           echo "PAGES_DIR contents:"; ls -la "${{ env.PAGES_DIR }}" || true
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch fronts from SimplyPlural (no-cache) → temp JSON
+      - name: Fetch current fronters (self) → fronts.json
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
@@ -42,59 +41,36 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
+          URL="https://api.apparyllis.com/v1/fronters/"
+          echo "Fetching: $URL"
           mkdir -p "${PAGES_DIR}"
-          # Fetch raw
           HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/fronts.raw.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
             -H "Accept: application/json" \
             -H "Cache-Control: no-cache" \
-            -H "Pragma: no-cache" \
-            https://api.apparyllis.com/v1/fronters/)
-          echo "Fetch HTTP status: ${HTTP_CODE}"
+            "${URL}")
+          echo "HTTP ${HTTP_CODE}"
           if [ "${HTTP_CODE}" != "200" ]; then
             echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/fronts.raw.json"; exit 1
           fi
-          # Validate & pretty-print deterministically (sorted keys)
-          jq -S . "${PAGES_DIR}/fronts.raw.json" > "${PAGES_DIR}/fronts.new.json"
+          # Warn if someone accidentally hit a history endpoint
+          if jq -e 'type == "array"' "${PAGES_DIR}/fronts.raw.json" >/dev/null; then
+            echo "WARNING: Response is an ARRAY (front history), not /v1/fronters/."
+          fi
+          # Pretty-print deterministically
+          jq -S . "${PAGES_DIR}/fronts.raw.json" > "${PAGES_DIR}/fronts.json"
           rm -f "${PAGES_DIR}/fronts.raw.json"
+          echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to ${PAGES_DIR}/fronts.json"
 
-      - name: Show first 400 chars of new JSON (debug)
+      - name: Show first 400 chars of fronts.json (debug)
         shell: bash
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          head -c 400 "${PAGES_DIR}/fronts.new.json" || true; echo
+          head -c 400 "${PAGES_DIR}/fronts.json" || true
+          echo
 
-      - name: Diff against existing fronts.json (if any)
-        shell: bash
-        env:
-          PAGES_DIR: ${{ env.PAGES_DIR }}
-        run: |
-          set -e
-          if [ -f "${PAGES_DIR}/fronts.json" ]; then
-            echo "Existing file found; computing diff (first 80 chars per line):"
-            diff -u <(jq -S . "${PAGES_DIR}/fronts.json") "${PAGES_DIR}/fronts.new.json" | sed 's/\t/ /g' | cut -c1-80 || true
-          else
-            echo "No existing fronts.json; will create it."
-          fi
-
-      - name: Replace file only if changed
-        shell: bash
-        env:
-          PAGES_DIR: ${{ env.PAGES_DIR }}
-        run: |
-          set -e
-          if [ -f "${PAGES_DIR}/fronts.json" ] && cmp -s "${PAGES_DIR}/fronts.json" "${PAGES_DIR}/fronts.new.json"; then
-            echo "No changes detected in JSON; keeping existing file."
-            rm -f "${PAGES_DIR}/fronts.new.json"
-            echo "NO_UPDATE=1" >> $GITHUB_ENV
-          else
-            mv "${PAGES_DIR}/fronts.new.json" "${PAGES_DIR}/fronts.json"
-            echo "Updated ${PAGES_DIR}/fronts.json"
-          fi
-
-      - name: Validate final JSON
-        if: env.NO_UPDATE != '1'
+      - name: Validate JSON
         shell: bash
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
@@ -102,7 +78,6 @@ jobs:
           python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('fronts.json is valid JSON')"
 
       - name: Commit and push if changed
-        if: env.NO_UPDATE != '1'
         shell: bash
         env:
           PAGES_BRANCH: ${{ env.PAGES_BRANCH }}
@@ -113,7 +88,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${PAGES_DIR}/fronts.json"
           if git diff --cached --quiet; then
-            echo "No changes to commit after add (unexpected)."
+            echo "No changes to commit."
             exit 0
           fi
           git commit -m "Update fronts.json [skip ci]"
