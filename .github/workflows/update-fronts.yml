@@ -104,9 +104,15 @@ jobs:
               mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
             done
 
+            # ✅ convert milliseconds → seconds before todate
             jq -S --arg lc "${LAST_CHANGE:-}" '{
               membersFronting: .,
-              lastChange: ( $lc | if .=="" then null else (try (tonumber | todate) catch .) end )
+              lastChange: (
+                $lc
+                | if .=="" then null
+                  else (try (tonumber / 1000 | todate) catch .)
+                  end
+              )
             }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
 
             rm -f "${PAGES_DIR}/resp.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/one.json"
