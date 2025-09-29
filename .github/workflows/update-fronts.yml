@@ -9,8 +9,9 @@ permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main
-  PAGES_DIR: .
+  PAGES_BRANCH: main        # your Pages branch
+  PAGES_DIR: .              # change if using docs/ or similar
+  WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
 
 jobs:
   update:
@@ -23,72 +24,98 @@ jobs:
           ref: ${{ env.PAGES_BRANCH }}
           fetch-depth: 0
 
-      - name: "Debug: show branch & tree"
-        shell: bash
+      - name: Debug repo state
         run: |
           echo "On branch: $(git rev-parse --abbrev-ref HEAD)"
-          echo "Repo root contents:"; ls -la
-          echo "PAGES_DIR contents:"; ls -la "${{ env.PAGES_DIR }}" || true
+          ls -la
+          ls -la "${{ env.PAGES_DIR }}" || true
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch fronters (self) → fronts.json
+      - name: Fetch fronters + members → fronts.json
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
           PAGES_DIR: ${{ env.PAGES_DIR }}
+          WARNING_FIELD: ${{ env.WARNING_FIELD }}
         run: |
           set -euo pipefail
-          test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          URL="https://api.apparyllis.com/v1/fronters/self"
-          echo "Fetching: $URL"
+          # --- 1) Get systemId from /v1/me
+          echo "→ /v1/me"
+          CODE=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
+            https://api.apparyllis.com/v1/me)
+          if [ "$CODE" != "200" ]; then
+            echo "Failed to get /me"; cat "${PAGES_DIR}/me.json"; exit 1
+          fi
+          USER_ID=$(jq -r '.id' "${PAGES_DIR}/me.json")
+          SYSTEM_ID=$(jq -r '.content.systemId // .content.uid' "${PAGES_DIR}/me.json")
+          if [ -z "$SYSTEM_ID" ] || [ "$SYSTEM_ID" = "null" ]; then
+            SYSTEM_ID="$USER_ID"
+          fi
+          echo "systemId=$SYSTEM_ID"
 
-          CODE=$(curl -sS -D "${PAGES_DIR}/resp.hdr" -o "${PAGES_DIR}/resp.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" \
-            -H "Accept: application/json" \
-            -H "Cache-Control: no-cache" \
-            "${URL}" || true)
-
-          echo "HTTP ${CODE}"
-          if [ "${CODE}" != "200" ]; then
-            echo "Headers:"; sed -n '1,40p' "${PAGES_DIR}/resp.hdr" || true
-            echo "Body:"; head -c 400 "${PAGES_DIR}/resp.json" || true; echo
-            exit 1
+          # --- 2) Get current fronters
+          echo "→ /v1/fronters/"
+          CODE=$(curl -sS -o "${PAGES_DIR}/fronters.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
+            https://api.apparyllis.com/v1/fronters/)
+          if [ "$CODE" != "200" ]; then
+            echo "Failed to get fronters"; cat "${PAGES_DIR}/fronters.json"; exit 1
           fi
 
-          jq -S . "${PAGES_DIR}/resp.json" > "${PAGES_DIR}/fronts.json"
+          # extract live member IDs
+          LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fronters.json")
+          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fronters.json")
+          : "${LAST_CHANGE:=}"
+
+          if [ -z "$LIVE_IDS" ]; then
+            echo '{"membersFronting":[],"lastChange":null}' | jq -S . > "${PAGES_DIR}/fronts.json"
+            exit 0
+          fi
+
+          # --- 3) Get all members for system
+          echo "→ /v1/members/${SYSTEM_ID}"
+          CODE=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
+            "https://api.apparyllis.com/v1/members/${SYSTEM_ID}")
+          if [ "$CODE" != "200" ]; then
+            echo "Failed to get members"; cat "${PAGES_DIR}/members.json"; exit 1
+          fi
+
+          # --- 4) Join live IDs with member info
+          jq -S --argjson ids "[${LIVE_IDS// /,}]" --arg WARN "$WARNING_FIELD" --arg lc "$LAST_CHANGE" '
+            . as $members
+            | $ids as $ids
+            | [ $members[] | select(.id as $id | $ids | index($id)) | {
+                id,
+                uuid: (.uuid // null),
+                name: (.name // null),
+                displayName: (.name // null),
+                pronouns: (.pronouns // null),
+                avatar: (.avatarUrl // null),
+                color: (.color // null),
+                info: (.info // null),
+                warning: (.fields[$WARN] // .customFields[$WARN] // null)
+              } ]
+            | { membersFronting: ., lastChange: (if $lc=="" then null else (try (tonumber/1000|todate) catch $lc) end) }
+          ' "${PAGES_DIR}/members.json" > "${PAGES_DIR}/fronts.json"
+
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to fronts.json"
 
-      - name: Show first 400 chars of fronts.json (debug)
-        shell: bash
-        env:
-          PAGES_DIR: ${{ env.PAGES_DIR }}
-        run: |
-          head -c 400 "${PAGES_DIR}/fronts.json" || true
-          echo
-
       - name: Validate JSON
-        shell: bash
-        env:
-          PAGES_DIR: ${{ env.PAGES_DIR }}
-        run: |
-          python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('fronts.json is valid JSON')"
+        run: python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('✅ fronts.json is valid')"
 
       - name: Commit and push if changed
-        shell: bash
-        env:
-          PAGES_BRANCH: ${{ env.PAGES_BRANCH }}
-          PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${PAGES_DIR}/fronts.json"
           if git diff --cached --quiet; then
-            echo "No changes to commit."
+            echo "No changes."
             exit 0
           fi
           git commit -m "Update fronts.json [skip ci]"
