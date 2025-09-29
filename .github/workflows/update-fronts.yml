@@ -33,7 +33,7 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch fronters + members + field labels → fronts.json
+      - name: Fetch fronters + members + custom fields → fronts.json
         shell: bash
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
@@ -42,7 +42,7 @@ jobs:
           set -euo pipefail
           mkdir -p "${PAGES_DIR}"
 
-          # ---------------- 1) systemId ----------------
+          # -------- 1) systemId --------
           echo "→ /v1/me"
           CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
@@ -53,7 +53,7 @@ jobs:
           [ -n "${SYSTEM_ID}" ] || { echo "systemId not found"; exit 1; }
           echo "systemId=${SYSTEM_ID}"
 
-          # ---------------- 2) fronters (history) ----------------
+          # -------- 2) fronters (history) --------
           echo "→ /v1/fronters/"
           CODE_F=$(curl -sS -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
@@ -67,7 +67,7 @@ jobs:
           # live ids
           LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fh.json" || true)
 
-          # ---------------- 3) members (full list) ----------------
+          # -------- 3) members (full) --------
           echo "→ /v1/members/${SYSTEM_ID}"
           CODE_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
@@ -75,37 +75,38 @@ jobs:
           echo "HTTP ${CODE_MEM}"
           [ "${CODE_MEM}" = "200" ] || { echo "Cannot get members"; head -c 400 "${PAGES_DIR}/members.json" || true; exit 1; }
 
-          # ---------------- 4) discover field IDs from CURRENT FRONTERS only ----------------
-          echo "Discovering field IDs from current fronters…"
-          # Gather content objects for live members
-          jq -r --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
-               --argjson fh  "$(cat "${PAGES_DIR}/fh.json")" '
-            ($fh
-              | map(select(.content.live==true))
-              | map(.content.member)
-              | unique) as $ids
-            | [$mem[] | select($ids | index(.id)) | .content] ' > "${PAGES_DIR}/live_members.json"
+          # -------- 4) Discover field IDs from the *live members* --------
+          # We look at (a) object keys AND (b) .name inside each object entry, because your tenant stores the fieldId in .name.
+          jq -r --argjson mem "$(cat "${PAGES_DIR}/members.json")" --argjson fh "$(cat "${PAGES_DIR}/fh.json")" '
+            ($fh | map(select(.content.live==true)) | map(.content.member) | unique) as $ids
+            | [ $mem[] | select($ids | index(.id)) | .content ] as $LM
+            | [
+                # object maps: keys + nested .name
+                ($LM[] | (.fields       // {} | to_entries[]? | .key)),
+                ($LM[] | (.fieldValues  // {} | to_entries[]? | .key)),
+                ($LM[] | (.fieldsValue  // {} | to_entries[]? | .key)),
+                ($LM[] | (.values       // {} | to_entries[]? | .key)),
+                ($LM[] | (.fields       // {} | to_entries[]? | .value.name?)),
+                ($LM[] | (.fieldValues  // {} | to_entries[]? | .value.name?)),
+                ($LM[] | (.fieldsValue  // {} | to_entries[]? | .value.name?)),
+                ($LM[] | (.values       // {} | to_entries[]? | .value.name?)),
+                # array shapes: .id or .name
+                ($LM[] | (.fields       // [] | .[]? | (.id // .name))),
+                ($LM[] | (.infoFields   // [] | .[]? | (.id // .name)))
+              ]
+            | flatten
+            | map(select(. != null and . != ""))
+            | unique
+            | .[]
+          ' > "${PAGES_DIR}/field_ids.txt" || true
 
-          # Extract possible field IDs from multiple shapes
-          jq -r '
-            .[] as $m
-            | ( $m.fields        // {} | keys[]? ),
-              ( $m.fieldValues   // {} | keys[]? ),
-              ( $m.fieldsValue   // {} | keys[]? ),
-              ( $m.values        // {} | keys[]? ),
-              ( $m.infoFields    // [] | .[]?.id? ),
-              ( $m.fields        // [] | .[]?.id? )
-          ' "${PAGES_DIR}/live_members.json" \
-          | sed '/^$/d' | sort -u > "${PAGES_DIR}/field_ids.txt" || true
-
-          echo "Field IDs found:"
+          echo "Field IDs discovered (first 30):"
           head -n 30 "${PAGES_DIR}/field_ids.txt" || true
 
-          # ---------------- 5) build fielddefs.json by fetching each definition ----------------
+          # -------- 5) Resolve labels for each fieldId (best-effort) --------
           echo '[]' > "${PAGES_DIR}/fielddefs.json"
           while IFS= read -r FID; do
             [ -n "${FID}" ] || continue
-            # try /v1/field/{systemId}/{id} then /v1/field/{id}
             URL1="https://api.apparyllis.com/v1/field/${SYSTEM_ID}/${FID}"
             URL2="https://api.apparyllis.com/v1/field/${FID}"
             CODE=$(curl -sS -o "${PAGES_DIR}/onefield.json" -w "%{http_code}" \
@@ -115,45 +116,48 @@ jobs:
                 -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" "${URL2}" || true)
             fi
             if [ "${CODE}" = "200" ]; then
-              # normalize into {id,label}
               jq -S --arg id "${FID}" '
-                {
-                  id: ($id),
-                  name: (.name // .label // .title // .id // $id)
-                }
+                { id: $id, name: (.name // .label // .title // .id // $id) }
               ' "${PAGES_DIR}/onefield.json" > "${PAGES_DIR}/onefield.norm.json"
               jq -S '. + [ input ]' "${PAGES_DIR}/fielddefs.json" "${PAGES_DIR}/onefield.norm.json" > "${PAGES_DIR}/fielddefs.new.json"
               mv "${PAGES_DIR}/fielddefs.new.json" "${PAGES_DIR}/fielddefs.json"
             fi
           done < "${PAGES_DIR}/field_ids.txt"
 
-          # ---------------- 6) Join → fronts.json ----------------
+          # -------- 6) Join to fronts.json (pulling values from many shapes) --------
           jq -n \
             --argjson fh  "$(cat "${PAGES_DIR}/fh.json")" \
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
-            --argjson fdef "$(cat "${PAGES_DIR}/fielddefs.json")" \
+            --argjson fdef "$(cat "${PAGES_DIR}/fielddefs.json" 2>/dev/null || echo '[]')" \
             --arg lc "${LAST_CHANGE:-}" '
-          # map id -> label
+          # Build id->label map (fallback to id when unknown)
           def to_label_map:
             (reduce .[] as $d ({}; . + { ($d.id // ""): ($d.name // "") }))
             | with_entries(select(.key != "" and .value != ""));
 
-          # get value for a field id from a member content object
-          def get_val($m; $id):
-            ($m.fieldValues[$id].value // $m.fieldValues[$id]) //
-            ($m.fields[$id].value      // $m.fields[$id]) //
-            ($m.fieldsValue[$id].value // $m.fieldsValue[$id]) //
-            ($m.values[$id].value      // $m.values[$id]) //
-            null;
+          # Fetch a value for a given fieldId by searching all the known containers
+          def value_for($m; $fid):
+            # exact id in known maps
+            ($m.fieldValues[$fid] // $m.fields[$fid] // $m.fieldsValue[$fid] // $m.values[$fid]) as $hit
+            | if $hit != null then
+                if ($hit|type)=="object" then ($hit.value // $hit.text // $hit.content // $hit.markdown // $hit.val // ($hit|tostring))
+                else $hit
+                end
+              else
+                # look for entries where .name == fid inside object maps
+                (
+                  ($m.fields       // {} | to_entries[]? | select(.value.name? == $fid) | .value.value?),
+                  ($m.fieldValues  // {} | to_entries[]? | select(.value.name? == $fid) | .value.value?),
+                  ($m.fieldsValue  // {} | to_entries[]? | select(.value.name? == $fid) | .value.value?),
+                  ($m.values       // {} | to_entries[]? | select(.value.name? == $fid) | .value.value?)
+                ) // empty
+              end;
 
-          # object {id->{...}} -> id list
-          def obj_ids(o): (o // {}) | keys;
-
-          # normalize sections into pseudo-fields
+          # Turn sections into pseudo-fields
           def section_fields($m):
             ($m.sections // [])
             | map({ label: (.title // .name // .label // ""), value: (.content // .text // "") })
-            | map(select((.label|length)>0 and (.value|length)>0));
+            | map(select((.label|length)>0 and (.value|tostring|length)>0));
 
           {
             lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
@@ -168,21 +172,34 @@ jobs:
                   | if $m == null then
                       { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, description: null, fields: [] }
                     else
-                      # collect all candidate field ids present on this member
-                      ( (obj_ids($m.fields) + obj_ids($m.fieldValues) + obj_ids($m.fieldsValue) + obj_ids($m.values)) | unique ) as $ids
-                      | ($fdef | to_label_map) as $labels
+                      # collect candidate fieldIds present on this member
+                      (
+                        ( ($m.fields       // {} | to_entries[]? | (.[].key) ),      # internal keys
+                          ($m.fieldValues  // {} | to_entries[]? | (.[].key) ),
+                          ($m.fieldsValue  // {} | to_entries[]? | (.[].key) ),
+                          ($m.values       // {} | to_entries[]? | (.[].key) ),
+                          # plus ids referenced as .name
+                          ($m.fields       // {} | to_entries[]? | .value.name?),
+                          ($m.fieldValues  // {} | to_entries[]? | .value.name?),
+                          ($m.fieldsValue  // {} | to_entries[]? | .value.name?),
+                          ($m.values       // {} | to_entries[]? | .value.name?),
+                          # arrays
+                          ($m.fields       // [] | .[]? | (.id // .name)),
+                          ($m.infoFields   // [] | .[]? | (.id // .name))
+                        ) | flatten | map(select(. != null and . != "")) | unique
+                      ) as $fids
+                      | ( $fdef | to_label_map ) as $labels
                       | (
-                          # id-based fields
-                          $ids
+                          $fids
                           | map({
+                              fid: .,
                               label: ($labels[.] // .),
-                              value: (get_val($m; .) // "")
+                              value: (value_for($m; .))
                             })
-                          | map(select((.label|length)>0 and (.value|tostring|length)>0))
-                        + # section-based fields
-                          section_fields($m)
-                        )
-                        as $all
+                          | map(select(.value != null and (.value|tostring|length)>0))
+                          | map({ label, value })
+                        + section_fields($m)
+                        ) as $all
                       | {
                           id: $mid,
                           displayName: $m.name,
@@ -205,7 +222,7 @@ jobs:
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          python -c "import json,sys,io; p='${{ env.PAGES_DIR }}/fronts.json'; j=json.load(io.open(p,'r',encoding='utf-8')); assert isinstance(j,dict) and 'membersFronting' in j, 'fronts.json missing membersFronting'; print('✅ fronts.json is valid; membersFronting:', len(j.get('membersFronting',[])))"
+          python -c "import json,io; p='${{ env.PAGES_DIR }}/fronts.json'; j=json.load(io.open(p,'r',encoding='utf-8')); assert isinstance(j,dict) and 'membersFronting' in j; print('✅ fronts.json ok; membersFronting:', len(j.get('membersFronting',[])))"
 
       - name: Commit and push if changed
         shell: bash
