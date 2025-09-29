@@ -29,14 +29,35 @@
   <div class="note" id="meta"></div>
 
   <script>
+    // Set window.SP_TOKEN before this script runs to authorize requests.
+    async function fetchFronters() {
+      const token = window.SP_TOKEN || "";
+      if (!token) {
+        throw new Error("SP_TOKEN not set");
+      }
+
+      const upstream = await fetch("https://api.apparyllis.com/v1/fronters/", {
+        headers: { Authorization: token }
+      });
+
+      const text = await upstream.text();
+      if (!upstream.ok) {
+        throw new Error(`Proxy error ${upstream.status}: ${text}`);
+      }
+
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        console.warn("Unexpected non-JSON response", e);
+        return {};
+      }
+    }
+
     async function loadFronts() {
       const out = document.getElementById("fronts");
       const meta = document.getElementById("meta");
       try {
-        const res = await fetch("/api/fronters"); // via your proxy
-        if (!res.ok) throw new Error(res.status + " " + res.statusText);
-
-        const data = await res.json();
+        const data = await fetchFronters();
         console.log(data); // 👈 check console to see raw response
 
         if (!data?.membersFronting?.length) {
