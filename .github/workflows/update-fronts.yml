@@ -21,7 +21,7 @@ jobs:
           ref: ${{ env.PAGES_BRANCH }}
           fetch-depth: 0            # we want history to commit cleanly
 
-        - name: "Debug: show branch & tree"
+      - name: Debug: show branch & tree
         run: |
           echo "On branch: $(git rev-parse --abbrev-ref HEAD)"
           echo "Repo root contents:"
