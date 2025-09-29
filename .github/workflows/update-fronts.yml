@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every ~5 min
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main        # change if your Pages branch is different (e.g., gh-pages)
-  PAGES_DIR: .              # change to docs if your site serves from /docs
+  PAGES_BRANCH: main
+  PAGES_DIR: .
 
 jobs:
   update:
@@ -44,9 +44,9 @@ jobs:
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          hdr() { sed -n '1,60p' "$1" 2>/dev/null || true; }
+          loghdr() { sed -n '1,80p' "$1" 2>/dev/null || true; }
 
-          # --- A) Get userId and possible systemId(s)
+          # A) userId (and assume systemId = userId if not provided by API)
           echo "→ /v1/me"
           CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
@@ -58,29 +58,36 @@ jobs:
           echo "userId=${USER_ID}"
 
           echo "→ /v1/user/${USER_ID}"
-          CODE_USER=$(curl -sS -o "${PAGES_DIR}/user.json" -w "%{http_code}" \
+          CODE_USER=$(curl -sS -D "${PAGES_DIR}/user.hdr" -o "${PAGES_DIR}/user.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
             "https://api.apparyllis.com/v1/user/${USER_ID}" || true)
           echo "HTTP ${CODE_USER}"
-          CANDS=$(jq -r '
-            [
-              .systemId, .systemID, .system,
-              .content.systemId, .content.systemID, .content.system
-            ] | map(select(.!=null)) | unique | .[]
-          ' "${PAGES_DIR}/user.json" 2>/dev/null || true)
-          CAND_LIST="${CANDS} ${USER_ID}"
-          echo "systemId candidates: ${CAND_LIST}"
 
-          # --- B) Get current fronters
+          # Try to extract a system id, else fall back to USER_ID (isAsystem accounts commonly use userId as systemId)
+          SYSTEM_ID=$(jq -r '(.systemId // .systemID // .system // .content.systemId // .content.systemID // .content.system // empty)' "${PAGES_DIR}/user.json" 2>/dev/null || true)
+          if [ -z "${SYSTEM_ID}" ] || [ "${SYSTEM_ID}" = "null" ]; then
+            SYSTEM_ID="${USER_ID}"
+            echo "No explicit systemId in /v1/user — falling back to systemId=userId (${SYSTEM_ID})"
+          else
+            echo "systemId=${SYSTEM_ID}"
+          fi
+
+          # B) current fronters
           echo "→ /v1/fronters/"
-          CODE_F=$(curl -sS -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
+          CODE_F=$(curl -sS -D "${PAGES_DIR}/fh.hdr" -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
             https://api.apparyllis.com/v1/fronters/ || true)
           echo "HTTP ${CODE_F}"
-          [ "${CODE_F}" = "200" ] || { echo "Cannot get fronters"; cat "${PAGES_DIR}/fh.json" || true; exit 1; }
+          if [ "${CODE_F}" != "200" ]; then
+            echo "Fronters headers:"; loghdr "${PAGES_DIR}/fh.hdr"
+            echo "Fronters body:"; head -c 400 "${PAGES_DIR}/fh.json" || true; echo
+            echo "ERROR: cannot get fronters"; exit 1
+          fi
 
+          # If API already returns desired object shape, keep it.
           if jq -e 'type=="object" and (.membersFronting|type=="array")' "${PAGES_DIR}/fh.json" >/dev/null; then
             jq -S . "${PAGES_DIR}/fh.json" > "${PAGES_DIR}/fronts.json"
+            echo "Kept /v1/fronters/ object as-is."
             exit 0
           fi
 
@@ -92,20 +99,17 @@ jobs:
           echo '[]' > "${PAGES_DIR}/mf.json"
           if [ -z "${LIVE_IDS}" ]; then
             echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
+            echo "No live members in history; wrote empty membersFronting."
             exit 0
           fi
 
-          # --- C1) Bulk members endpoint
-          HAVE_MEMS=0
-          echo "→ /v1/members/"
-          CODE_MEMS=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
+          # C1) Bulk members with explicit systemId
+          echo "→ /v1/members/${SYSTEM_ID}"
+          CODE_MEMS=$(curl -sS -D "${PAGES_DIR}/members.hdr" -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
-            https://api.apparyllis.com/v1/members/ || true)
-          if [ "${CODE_MEMS}" != "200" ]; then
-            CODE_MEMS=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
-              -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
-              https://api.apparyllis.com/v1/members/self || true)
-          fi
+            "https://api.apparyllis.com/v1/members/${SYSTEM_ID}" || true)
+          echo "HTTP ${CODE_MEMS}"
+          HAVE_MEMS=0
           [ "${CODE_MEMS}" = "200" ] && HAVE_MEMS=1
 
           if [ "${HAVE_MEMS}" = "1" ]; then
@@ -134,35 +138,30 @@ jobs:
             ' "${PAGES_DIR}/fronts.tmp.json" > "${PAGES_DIR}/fronts.json"
             rm -f "${PAGES_DIR}/fronts.tmp.json"
           else
-            # --- C2) Fallback per-member lookups
+            # C2) Per-member as fallback, with loud logs
             echo "Bulk members unavailable; falling back to per-member lookups"
             echo '[]' > "${PAGES_DIR}/mf2.json"
 
             for ID in ${LIVE_IDS}; do
-              GOT=0
-              for SID in ${CAND_LIST}; do
-                [ -n "${SID}" ] || continue
-                MEM_URL="https://api.apparyllis.com/v1/member/${SID}/${ID}"
-                CODE_M=$(curl -sS -o "${PAGES_DIR}/m.json" -w "%{http_code}" \
-                  -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" "${MEM_URL}" || true)
-                if [ "${CODE_M}" = "200" ]; then
-                  jq -S --arg WARN "${WARNING_FIELD}" '{
-                    id: (.id // "'${ID}'"),
-                    uuid: (.uuid // null),
-                    name: (.name // null),
-                    displayName: (.name // null),
-                    pronouns: (.pronouns // null),
-                    avatar: (.avatarUrl // null),
-                    color: (.color // null),
-                    info: (.info // null),
-                    warning: ( .fields[$WARN] // .customFields[$WARN] // null )
-                  }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
-                  GOT=1
-                  break
-                fi
-              done
-
-              if [ "${GOT}" = "0" ]; then
+              MEM_URL="https://api.apparyllis.com/v1/member/${SYSTEM_ID}/${ID}"
+              echo "→ ${MEM_URL}"
+              CODE_M=$(curl -sS -D "${PAGES_DIR}/m.hdr" -o "${PAGES_DIR}/m.json" -w "%{http_code}" \
+                -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" "${MEM_URL}" || true)
+              echo "member ${ID} → HTTP ${CODE_M}"
+              if [ "${CODE_M}" = "200" ]; then
+                jq -S --arg WARN "${WARNING_FIELD}" '{
+                  id: (.id // "'${ID}'"),
+                  uuid: (.uuid // null),
+                  name: (.name // null),
+                  displayName: (.name // null),
+                  pronouns: (.pronouns // null),
+                  avatar: (.avatarUrl // null),
+                  color: (.color // null),
+                  info: (.info // null),
+                  warning: ( .fields[$WARN] // .customFields[$WARN] // null )
+                }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
+              else
+                echo "WARN: could not resolve member ${ID}; writing minimal record."
                 echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "pronouns": null, "avatar": null, "color": null, "info": null, "warning": null }' > "${PAGES_DIR}/one.json"
               fi
 
@@ -178,12 +177,12 @@ jobs:
 
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to fronts.json"
 
-      - name: Show first 400 chars of fronts.json (debug)
+      - name: Show first 600 chars of fronts.json (debug)
         shell: bash
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          head -c 400 "${PAGES_DIR}/fronts.json" || true
+          head -c 600 "${PAGES_DIR}/fronts.json" || true
           echo
 
       - name: Validate JSON
