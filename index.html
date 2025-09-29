@@ -33,15 +33,10 @@
     .name { font-size:1.125rem; font-weight:700; line-height:1.2; }
     .pronouns { color:var(--muted); font-size:.95rem; }
 
-    .desc, .warning, .fields { grid-column:1/-1; }
+    .desc, .fields { grid-column:1/-1; }
     .fields { display:flex; flex-direction:column; gap:.35rem; margin-top:.25rem; }
     .field { background:var(--pill); border:1px solid var(--border); border-radius:10px; padding:.45rem .6rem; font-size:.92rem; }
     .field b { color:#111827; }
-
-    .warning {
-      background:var(--warn-bg); border:1px solid var(--warn-border); color:#92400e;
-      border-radius:10px; padding:.65rem .75rem; font-weight:600; margin-top:.25rem;
-    }
 
     .empty { text-align:center; color:var(--muted); font-size:1.05rem; padding:2rem 0; }
 
@@ -121,32 +116,31 @@
     function renderFront(m) {
       const color = m.color || "#e5e7eb";
       const name = m.displayName || m.name || "Unnamed";
-      const pronouns = m.pronouns ? `<div class="pronouns">${esc(m.pronouns)}</div>` : "";
-      const avatar = m.avatar ? `<img class="avatar" src="${esc(m.avatar)}" alt="" loading="lazy">`
+      const pronouns = m.pronouns ? `<div class="pronouns">${escapeHtml(m.pronouns)}</div>` : "";
+      const avatar = m.avatar ? `<img class="avatar" src="${escapeHtml(m.avatar)}" alt="" loading="lazy">`
                               : `<div class="avatar" aria-hidden="true"></div>`;
 
       const desc = m.description ? `<div class="desc"><div class="md">${md(m.description)}</div></div>` : "";
-      const warn = m.warning ? `<div class="warning"><div class="md">${md(m.warning)}</div></div>` : "";
 
       const fields = Array.isArray(m.fields) && m.fields.length
         ? `<div class="fields">${
             m.fields
               .filter(f => f?.label && f?.value)
-              .map(f => `<div class="field"><b>${esc(f.label)}:</b> <div class="md">${md(String(f.value))}</div></div>`)
+              .map(f => `<div class="field"><b>${escapeHtml(f.label)}:</b> <div class="md">${md(String(f.value))}</div></div>`)
               .join("")
-          }</div>` : "";
+          }</div>`
+        : "";
 
       return `
         <div class="front">
-          <div class="bar" style="background:${esc(color)}"></div>
+          <div class="bar" style="background:${escapeHtml(color)}"></div>
           ${avatar}
           <div>
-            <div class="name">${esc(name)}</div>
+            <div class="name">${escapeHtml(name)}</div>
             ${pronouns}
           </div>
           ${desc}
           ${fields}
-          ${warn}
         </div>
       `;
     }
@@ -158,12 +152,12 @@
         return DOMPurify.sanitize(html, {USE_PROFILES:{html:true}});
       }
       // Fallback: minimal markdown
-      return esc(txt).replace(/!\[([^\]]*)\]\(([^)]+)\)/g,'<img alt="$1" src="$2">')
+      return escapeHtml(txt).replace(/!\[([^\]]*)\]\(([^)]+)\)/g,'<img alt="$1" src="$2">')
                      .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
                      .replace(/\n/g,'<br>');
     }
-    const esc = s => String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
-                              .replaceAll('"',"&quot;").replaceAll("'","&#39;");
+    const escapeHtml = s => String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+                                    .replaceAll('"',"&quot;").replaceAll("'","&#39;");
   </script>
 </body>
 </html>
