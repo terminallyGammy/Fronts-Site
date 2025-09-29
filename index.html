@@ -6,58 +6,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
-      --card-bg: #fff;
-      --border: #e5e7eb;
-      --text: #111827;
-      --muted: #6b7280;
-      --pill: #f3f4f6;
-      --warn-bg: #fff7ed;
-      --warn-border: #f59e0b;
+      --card-bg: #fff; --border: #e5e7eb; --text: #111827; --muted: #6b7280;
+      --pill: #f3f4f6; --warn-bg: #fff7ed; --warn-border: #f59e0b;
     }
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
-      background: #f9fafb;
-      color: var(--text);
-      max-width: 780px;
-      margin: 2rem auto;
-      padding: 1rem;
-    }
-    h1 { text-align: center; margin: 0 0 1rem; font-weight: 800; }
-    #meta { text-align: center; color: var(--muted); font-size: .95rem; margin-bottom: 1.25rem; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
-    .front {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 1rem;
-      display: grid;
-      grid-template-columns: 64px 1fr;
-      grid-template-rows: auto auto auto;
-      gap: .5rem 1rem;
-      align-items: start;
-    }
-    .bar { height: 6px; background: var(--pill); border-radius: 999px; grid-column: 1 / -1; }
-    .avatar {
-      width: 64px; height: 64px; border-radius: 12px; object-fit: cover; background: #eee; border: 1px solid var(--border);
-      grid-row: 1 / span 2;
-    }
-    .name { font-size: 1.125rem; font-weight: 700; line-height: 1.2; }
-    .pronouns { color: var(--muted); font-size: .95rem; }
-    .desc, .warning, .fields { grid-column: 1 / -1; }
-    .desc { font-size: .98rem; color: #1f2937; }
-    .fields { display: flex; flex-direction: column; gap: .35rem; margin-top: .25rem; }
-    .field { background: var(--pill); border: 1px solid var(--border); border-radius: 10px; padding: .45rem .6rem; font-size: .92rem; }
-    .field b { color: #111827; }
-    .warning {
-      background: var(--warn-bg); border: 1px solid var(--warn-border);
-      color: #92400e; border-radius: 10px; padding: .65rem .75rem; font-weight: 600; margin-top: .25rem;
-    }
-    .empty { text-align: center; color: var(--muted); font-size: 1.05rem; padding: 2rem 0; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial;
+      background:#f9fafb; color:var(--text); max-width:780px; margin:2rem auto; padding:1rem; }
+    h1 { text-align:center; margin:0 0 1rem; font-weight:800; }
+    #meta { text-align:center; color:var(--muted); font-size:.95rem; margin-bottom:1.25rem; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; }
+    .front { background:var(--card-bg); border:1px solid var(--border); border-radius:14px; padding:1rem;
+      display:grid; grid-template-columns:64px 1fr; grid-template-rows:auto auto auto; gap:.5rem 1rem; align-items:start; }
+    .bar { height:6px; background:var(--pill); border-radius:999px; grid-column:1 / -1; }
+    .avatar { width:64px; height:64px; border-radius:12px; object-fit:cover; background:#eee; border:1px solid var(--border);
+      grid-row:1 / span 2; }
+    .name { font-size:1.125rem; font-weight:700; line-height:1.2; }
+    .pronouns { color:var(--muted); font-size:.95rem; }
+    .desc, .warning, .fields { grid-column:1 / -1; }
+    .desc { font-size:.98rem; color:#1f2937; }
+    .fields { display:flex; flex-direction:column; gap:.35rem; margin-top:.25rem; }
+    .field { background:var(--pill); border:1px solid var(--border); border-radius:10px; padding:.45rem .6rem; font-size:.92rem; }
+    .field b { color:#111827; }
+    .warning { background:var(--warn-bg); border:1px solid var(--warn-border); color:#92400e;
+      border-radius:10px; padding:.65rem .75rem; font-weight:600; margin-top:.25rem; }
+    .empty { text-align:center; color:var(--muted); font-size:1.05rem; padding:2rem 0; }
   </style>
 
   <!-- Markdown + sanitization -->
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 </head>
 <body>
   <h1>⋆˚✿˖° Current Fronters ⋆˚✿˖°</h1>
@@ -65,7 +41,22 @@
   <div id="fronts" class="grid"></div>
 
   <script>
-    window.addEventListener('load', () => loadFronts());
+    // Wait until both libraries are present (handles CDN race) then render.
+    (async function start() {
+      const ok = await waitFor(() => window.marked && window.DOMPurify, 40, 100);
+      if (ok) {
+        // nice defaults
+        try { window.marked.setOptions({ breaks: true }); } catch {}
+      } else {
+        console.warn("CDN libs missing; using minimal markdown fallback.");
+      }
+      loadFronts();
+    })();
+
+    async function waitFor(testFn, tries=20, delay=100) {
+      for (let i=0;i<tries;i++){ if (testFn()) return true; await new Promise(r=>setTimeout(r,delay)); }
+      return false;
+    }
 
     async function loadFronts() {
       const out = document.getElementById("fronts");
@@ -93,25 +84,6 @@
       }
     }
 
-    function md(htmlish) {
-      // Render Markdown safely
-      try {
-        const unsafe = marked.parse(String(htmlish ?? ""));
-        return DOMPurify.sanitize(unsafe, {USE_PROFILES: {html: true}});
-      } catch {
-        return "";
-      }
-    }
-
-    function escapeHtml(s) {
-      return String(s)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-    }
-
     function renderFront(m) {
       const color = m.color || "#e5e7eb";
       const name = m.displayName || m.name || "Unnamed";
@@ -120,16 +92,14 @@
         ? `<img class="avatar" src="${escapeHtml(m.avatar)}" alt="" loading="lazy">`
         : `<div class="avatar" aria-hidden="true"></div>`;
 
-      // Markdown for description & warning
-      const desc = m.description ? `<div class="desc">${md(m.description)}</div>` : "";
-      const warn = m.warning ? `<div class="warning">${md(m.warning)}</div>` : "";
+      const desc = m.description ? `<div class="desc">${renderMD(m.description)}</div>` : "";
+      const warn = m.warning ? `<div class="warning">${renderMD(m.warning)}</div>` : "";
 
-      // Render custom fields (Markdown values)
       const fields = Array.isArray(m.fields) && m.fields.length
         ? `<div class="fields">${
             m.fields
               .filter(f => f?.label && f?.value)
-              .map(f => `<div class="field"><b>${escapeHtml(f.label)}:</b> ${md(String(f.value))}</div>`)
+              .map(f => `<div class="field"><b>${escapeHtml(f.label)}:</b> ${renderMD(String(f.value))}</div>`)
               .join("")
           }</div>`
         : "";
@@ -147,6 +117,29 @@
           ${warn}
         </div>
       `;
+    }
+
+    function renderMD(s) {
+      const text = String(s ?? "");
+      if (window.marked && window.DOMPurify) {
+        const html = window.marked.parse(text);
+        return window.DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+      }
+      // Fallback: super-minimal MD (images, links, line breaks)
+      let html = escapeHtml(text)
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" style="max-width:100%;border-radius:8px;border:1px solid #e5e7eb" loading="lazy">')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+        .replace(/\n/g, '<br>');
+      return html;
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
     }
   </script>
 </body>
