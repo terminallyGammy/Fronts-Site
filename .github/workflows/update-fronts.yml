@@ -34,18 +34,18 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch + normalize fronters → fronts.json
+      - name: Fetch fronters + members → fronts.json
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
           PAGES_DIR: ${{ env.PAGES_DIR }}
-          WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
+          WARNING_FIELD: ${{ env.WARNING_FIELD }}
         run: |
           set -euo pipefail
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          # --- A) Fetch /v1/me to get systemId ---
+          # --- 1) Identify systemId (fall back to uid/id from /me)
           echo "→ /v1/me"
           CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
@@ -55,74 +55,82 @@ jobs:
           if [ "${CODE_ME}" != "200" ]; then
             echo "ERROR: cannot fetch /v1/me"; cat "${PAGES_DIR}/me.json"; exit 1
           fi
-          SYSTEM_ID=$(jq -r '.id // .content.id // .content.uid' "${PAGES_DIR}/me.json")
+          SYSTEM_ID=$(jq -r '.content.systemId // .content.uid // .id' "${PAGES_DIR}/me.json")
+          [ -n "${SYSTEM_ID}" ] || { echo "ERROR: systemId not found in /v1/me"; exit 1; }
           echo "systemId=${SYSTEM_ID}"
 
-          # --- B) Fetch fronters ---
+          # --- 2) Get current fronters (history array)
           echo "→ /v1/fronters/"
           CODE_F=$(curl -sS -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
             -H "Accept: application/json" \
+            -H "Cache-Control: no-cache" \
             https://api.apparyllis.com/v1/fronters/ || true)
           echo "HTTP ${CODE_F}"
           if [ "${CODE_F}" != "200" ]; then
             echo "ERROR: cannot get fronters"; cat "${PAGES_DIR}/fh.json"; exit 1
           fi
 
-          if jq -e 'type=="object" and (.membersFronting|type=="array")' "${PAGES_DIR}/fh.json" >/dev/null; then
-            jq -S . "${PAGES_DIR}/fh.json" > "${PAGES_DIR}/fronts.json"
-            rm -f "${PAGES_DIR}/fh.json"
-            echo "Kept /v1/fronters/ object as-is."
-            exit 0
-          fi
-
-          echo "Normalizing history → membersFronting…"
-          LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fh.json" || true)
-          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json" || true)
+          # Extract lastChange (ms since epoch → ISO)
+          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json")
           : "${LAST_CHANGE:=}"
 
-          echo '[]' > "${PAGES_DIR}/mf.json"
-          if [ -z "${LIVE_IDS}" ]; then
-            echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
-            rm -f "${PAGES_DIR}/fh.json" "${PAGES_DIR}/mf.json"
-            echo "No live members; wrote empty membersFronting."
-            exit 0
-          fi
-
-          # --- C) Fetch full members list for debug ---
+          # --- 3) Get full members list for system
           echo "→ /v1/members/${SYSTEM_ID}"
           CODE_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
             -H "Accept: application/json" \
+            -H "Cache-Control: no-cache" \
             "https://api.apparyllis.com/v1/members/${SYSTEM_ID}" || true)
           echo "HTTP ${CODE_MEM}"
-          echo "Dumping first 400 chars of members.json for debug:"
-          head -c 400 "${PAGES_DIR}/members.json" || true; echo
+          if [ "${CODE_MEM}" != "200" ]; then
+            echo "ERROR: cannot get members"; head -c 400 "${PAGES_DIR}/members.json" || true; echo
+            exit 1
+          fi
 
-          # TODO: Next step will map LIVE_IDS against members.json to build proper membersFronting.
-
-          # For now just write placeholder
-          jq -n --arg lc "${LAST_CHANGE:-}" '{
-            membersFronting: [],
-            lastChange: (if $lc=="" then null else (try (tonumber/1000|todate) catch .) end)
-          }' > "${PAGES_DIR}/fronts.json"
+          # --- 4) Join fronters (live) with member profiles → fronts.json
+          jq -n \
+            --argjson fh "$(cat "${PAGES_DIR}/fh.json")" \
+            --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
+            --arg lc "${LAST_CHANGE:-}" \
+            --arg WARNING_FIELD "${WARNING_FIELD}" '
+            {
+              lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
+              membersFronting: (
+                $fh
+                | map(select(.content.live==true))
+                | map(.content.member)
+                | unique
+                | map(
+                    . as $mid
+                    | ($mem[] | select(.id==$mid) | .content) as $m?
+                    | if $m then {
+                        id: $mid,
+                        displayName: $m.name,
+                        pronouns: $m.pronouns,
+                        avatar: $m.avatarUrl,
+                        color: $m.color,
+                        warning: (
+                          ($m.fields // {})
+                          | to_entries[]
+                          | select(.value.name==$WARNING_FIELD)
+                          | .value.value? // null
+                        )
+                      } else {
+                        { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, warning: null }
+                      end
+                  )
+              )
+            }' > "${PAGES_DIR}/fronts.json"
 
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to fronts.json"
-
-      - name: Show first 400 chars of fronts.json (debug)
-        shell: bash
-        env:
-          PAGES_DIR: ${{ env.PAGES_DIR }}
-        run: |
-          head -c 400 "${PAGES_DIR}/fronts.json" || true
-          echo
 
       - name: Validate JSON
         shell: bash
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('fronts.json is valid JSON')"
+          python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('✅ fronts.json is valid')"
 
       - name: Commit and push if changed
         shell: bash
