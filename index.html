@@ -57,63 +57,43 @@
   <div class="note" id="meta"></div>
 
   <script>
-  function fmtDate(x) {
-    if (!x) return "";
-    const n = Number(x);
-    const d = Number.isFinite(n) ? new Date(n > 1e12 ? n : n * 1000) : new Date(String(x));
-    return isNaN(+d) ? "" : d.toLocaleString();
-  }
-  function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function loadFronts() {
+  const out = document.getElementById("fronts");
+  const meta = document.getElementById("meta");
+  try {
+    const res = await fetch(`./fronts.json?v=${Date.now()}`, { cache: "no-store" });
+    const data = await res.json();
 
-  async function loadFronts() {
-    const out = document.getElementById("fronts");
-    const meta = document.getElementById("meta");
-
-    try {
-      const res = await fetch("./fronts.json", { cache: "no-store" });
-      const raw = await res.text();
-      if (!res.ok) { out.textContent = "Error loading fronts."; console.error(res.status, raw); return; }
-
-      let data; try { data = JSON.parse(raw); } catch { out.textContent="Error loading fronts."; console.error("Invalid JSON", raw); return; }
-
-      if (!data || Array.isArray(data) || !Array.isArray(data.membersFronting)) {
-        out.textContent = "No one fronting right now."; meta.textContent = ""; return;
-      }
-      const arr = data.membersFronting;
-
-      if (arr.length === 0) {
-        out.textContent = "No one fronting right now.";
-      } else {
-        out.innerHTML = arr.map(m => {
-          const name = m.displayName || m.name || m.id || "Unnamed";
-          const pronouns = m.pronouns ? ` (${esc(m.pronouns)})` : "";
-          const color = m.color || "#ddd";
-          const avatar = m.avatar || "";
-          const info = m.info ? `<div class="subtle">${esc(m.info)}</div>` : "";
-          const warning = m.warning ? `<div class="warning">${esc(m.warning)}</div>` : "";
-
-          return `
-            <div class="front" style="border-left: 8px solid ${color};">
-              ${avatar ? `<img class="avatar" src="${esc(avatar)}" alt="" loading="lazy" />`
-                       : `<div class="avatar"></div>`}
-              <div>
-                <div class="title">${esc(name)}${pronouns}</div>
-                ${info}
-              </div>
-              ${warning}
-            </div>
-          `;
-        }).join("");
-      }
-
-      meta.textContent = data.lastChange ? ("Last change: " + fmtDate(data.lastChange)) : "";
-    } catch (err) {
-      out.textContent = "Error loading fronts.";
-      console.error(err);
+    const list = Array.isArray(data?.membersFronting) ? data.membersFronting : [];
+    if (!list.length) {
+      out.textContent = "No one fronting right now.";
+      meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
+      return;
     }
-  }
-  loadFronts();
-</script>
 
+    out.innerHTML = list.map(m => {
+      const name = m.displayName || m.name || m.id || "Unnamed";
+      const pr   = m.pronouns ? `<div style="opacity:.8">${m.pronouns}</div>` : "";
+      const warn = m.warning ? `<div style="margin-top:.5rem;padding:.5rem;border-radius:6px;background:#fff3cd;border:1px solid #ffe69c;text-align:left;white-space:pre-wrap">${m.warning}</div>` : "";
+      const img  = m.avatar ? `<img src="${m.avatar}" alt="${name}" style="width:64px;height:64px;border-radius:50%;object-fit:cover;display:block;margin:0 auto .5rem">` : "";
+      const border = m.color || "#ddd";
+      return `
+        <div class="front" style="border-left:8px solid ${border};">
+          ${img}
+          <div><strong>${name}</strong></div>
+          ${pr}
+          ${warn}
+        </div>
+      `;
+    }).join("");
+
+    meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
+  } catch (e) {
+    out.textContent = "Error loading fronts.";
+    console.error(e);
+  }
+}
+loadFronts();
+</script>
 </body>
 </html>
