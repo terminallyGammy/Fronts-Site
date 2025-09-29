@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every ~5 min
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 permissions:
-  contents: write           # allow committing fronts.json
+  contents: write
 
 env:
-  PAGES_BRANCH: main        # ← change if your Pages branch is e.g. gh-pages
-  PAGES_DIR: .              # ← change to docs if Pages serves from /docs
+  PAGES_BRANCH: main
+  PAGES_DIR: .
 
 jobs:
   update:
@@ -23,7 +23,7 @@ jobs:
           ref: ${{ env.PAGES_BRANCH }}
           fetch-depth: 0
 
-      - name: Debug: show branch & tree
+      - name: "Debug: show branch & tree"
         shell: bash
         run: |
           echo "On branch: $(git rev-parse --abbrev-ref HEAD)"
@@ -54,7 +54,7 @@ jobs:
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          python -c "import json,sys; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('fronts.json is valid JSON')"
+          python -c "import json; json.load(open('${{ env.PAGES_DIR }}/fronts.json')); print('fronts.json is valid JSON')"
 
       - name: Commit and push if changed
         shell: bash
