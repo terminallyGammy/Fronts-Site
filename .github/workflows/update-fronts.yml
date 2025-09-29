@@ -2,7 +2,7 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every ~5 min
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -11,8 +11,7 @@ permissions:
 env:
   PAGES_BRANCH: main
   PAGES_DIR: .
-  # ⬇️ Put your exact WARNING field label here (must match the label in SimplyPlural)
-  WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
+  WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"   # <-- exact label text
 
 jobs:
   update:
@@ -35,7 +34,7 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch fronters + members → fronts.json
+      - name: Fetch fronters + members + field defs → fronts.json
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
@@ -47,104 +46,124 @@ jobs:
           test -n "${WARNING_FIELD}" || { echo "ERROR: WARNING_FIELD env is empty"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          # 1) Identify systemId (fallbacks included)
+          # 1) Identify systemId
           echo "→ /v1/me"
           CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" \
-            -H "Accept: application/json" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
             https://api.apparyllis.com/v1/me || true)
           echo "HTTP ${CODE_ME}"
-          if [ "${CODE_ME}" != "200" ]; then
-            echo "ERROR: cannot fetch /v1/me"; head -c 400 "${PAGES_DIR}/me.json" || true; echo; exit 1
-          fi
+          [ "${CODE_ME}" = "200" ] || { echo "Cannot fetch /v1/me"; head -c 400 "${PAGES_DIR}/me.json" || true; exit 1; }
           SYSTEM_ID=$(jq -r '.content.systemId // .content.uid // .id' "${PAGES_DIR}/me.json")
-          [ -n "${SYSTEM_ID}" ] || { echo "ERROR: systemId not found in /v1/me"; exit 1; }
+          [ -n "${SYSTEM_ID}" ] || { echo "systemId not found"; exit 1; }
           echo "systemId=${SYSTEM_ID}"
 
-          # 2) Get current fronters (history array)
+          # 2) Current fronters (many deployments return a history array)
           echo "→ /v1/fronters/"
           CODE_F=$(curl -sS -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" \
-            -H "Accept: application/json" \
-            -H "Cache-Control: no-cache" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
             https://api.apparyllis.com/v1/fronters/ || true)
           echo "HTTP ${CODE_F}"
-          if [ "${CODE_F}" != "200" ]; then
-            echo "ERROR: cannot get fronters"; head -c 400 "${PAGES_DIR}/fh.json" || true; echo; exit 1
-          fi
+          [ "${CODE_F}" = "200" ] || { echo "Cannot get fronters"; head -c 400 "${PAGES_DIR}/fh.json" || true; exit 1; }
 
-          # lastChange from ms → ISO
           LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json")
           : "${LAST_CHANGE:=}"
 
-          # 3) Get full members list
+          # 3) Members (full list)
           echo "→ /v1/members/${SYSTEM_ID}"
           CODE_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
-            -H "Authorization: ${SP_TOKEN}" \
-            -H "Accept: application/json" \
-            -H "Cache-Control: no-cache" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
             "https://api.apparyllis.com/v1/members/${SYSTEM_ID}" || true)
           echo "HTTP ${CODE_MEM}"
-          if [ "${CODE_MEM}" != "200" ]; then
-            echo "ERROR: cannot get members"; head -c 400 "${PAGES_DIR}/members.json" || true; echo; exit 1
+          [ "${CODE_MEM}" = "200" ] || { echo "Cannot get members"; head -c 400 "${PAGES_DIR}/members.json" || true; exit 1; }
+
+          # 4) Field definitions (label map)
+          echo "→ /v1/fields/${SYSTEM_ID}"
+          CODE_FDEF=$(curl -sS -o "${PAGES_DIR}/fielddefs.json" -w "%{http_code}" \
+            -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
+            "https://api.apparyllis.com/v1/fields/${SYSTEM_ID}" || true)
+          echo "HTTP ${CODE_FDEF}"
+          if [ "${CODE_FDEF}" != "200" ]; then
+            echo "WARNING: could not fetch field definitions; custom fields may be missing."
+            echo '[]' > "${PAGES_DIR}/fielddefs.json"
           fi
 
-          # 4) Join fronters (live) with member profiles → fronts.json
+          # 5) Join → fronts.json
           jq -n \
-            --argjson fh "$(cat "${PAGES_DIR}/fh.json")" \
+            --argjson fh  "$(cat "${PAGES_DIR}/fh.json")" \
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
+            --argjson fdef "$(cat "${PAGES_DIR}/fielddefs.json")" \
             --arg lc "${LAST_CHANGE:-}" \
             --arg WARNING_FIELD "${WARNING_FIELD}" '
-            {
-              lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
-              membersFronting: (
-                $fh
-                | map(select(.content.live==true))
-                | map(.content.member)
-                | unique
-                | map(
-                    . as $mid
-                    | ( ( $mem[] | select(.id==$mid) | .content ) // null ) as $m
-                    | if $m != null then
-                        # Normalize custom fields into [{label,value,private,type}]
-                        (
-                          ($m.fields // {})
-                          | to_entries
-                          | map({
-                              # label can be inside .value.name OR be the key itself
-                              label: (.value.name // .key // null),
-                              # value may be nested in .value.value OR be a scalar directly
-                              value: ( ( .value.value // .value // null ) ),
-                              # optional metadata (best-effort)
-                              private: ( .value.private // false ),
-                              type:    ( .value.type    // null )
-                            })
-                          # drop empties
-                          | map(select(.label != null and .value != null and (.label|tostring|length) > 0 and (.value|tostring|length) > 0))
-                        ) as $allFields
-                        | {
-                            id: $mid,
-                            displayName: $m.name,
-                            pronouns: $m.pronouns,
-                            avatar: $m.avatarUrl,
-                            color: $m.color,
-                            description: ($m.desc // $m.info // null),
-                            fields: $allFields,
-                            warning: (
-                              $allFields
-                              | map(select(.label == $WARNING_FIELD) | .value)
-                              | first // null
-                            )
-                          }
-                      else
-                        { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, description: null, fields: [], warning: null }
-                      end
-                  )
-              )
-            }' > "${PAGES_DIR}/fronts.json"
+          def to_label_map:
+            (reduce .[] as $d ({}; . + { ($d.id // $d._id // $d.uuid // $d.name // ""): ($d.name // $d.label // $d.title // "") }))
+            # strip empties
+            | with_entries(select(.key != "" and .value != ""));
+
+          def extract_fields($m; $labels):
+            # Member may expose values in many ways; try them all.
+            # Build list of [defId, label, value] and then normalize.
+            ( $labels | to_entries ) as $defs
+            | [ $defs[] as $d |
+                $d.key as $id |
+                $d.value as $label |
+                # lookups:
+                (
+                  # 1) object at m.fields[id] with nested value(s)
+                  ( $m.fields?[$id].value? // $m.fields?[$id]? // null ) //
+                  # 2) flat maps commonly seen
+                  ( $m.fieldValues?[$id] // $m.fieldsValue?[$id] // $m.values?[$id] // null )
+                ) as $val
+                | select($val != null)
+                | {
+                    label: $label,
+                    value:
+                      ( if ($val|type)=="object" then
+                          # typical shapes: {value:"X"} or {text:"X"} or {content:"X"}
+                          ( $val.value // $val.text // $val.content // ($val|tostring) )
+                        else $val end ),
+                    private: ( $m.fields?[$id].private // false ),
+                    type:    ( $m.fields?[$id].type    // null )
+                  }
+              ]
+            # prune blanks
+            | map(select((.label|tostring|length)>0 and (.value|tostring|length)>0));
+
+          {
+            lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
+            membersFronting: (
+              $fh
+              | map(select(.content.live==true))
+              | map(.content.member)
+              | unique
+              | map(
+                  . as $mid
+                  | ( ($mem[] | select(.id==$mid) | .content) // null ) as $m
+                  | if $m != null then
+                      ( $fdef | to_label_map ) as $labels
+                      | extract_fields($m; $labels) as $allFields
+                      | {
+                          id: $mid,
+                          displayName: $m.name,
+                          pronouns: $m.pronouns,
+                          avatar: $m.avatarUrl,
+                          color: $m.color,
+                          description: ($m.desc // $m.info // null),
+                          fields: $allFields,
+                          warning: (
+                            $allFields
+                            | map(select(.label == $WARNING_FIELD) | .value)
+                            | first // null
+                          )
+                        }
+                    else
+                      { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, description: null, fields: [], warning: null }
+                    end
+                )
+            )
+          }' > "${PAGES_DIR}/fronts.json"
 
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to fronts.json"
-          echo "Preview fronts.json:"; head -c 400 "${PAGES_DIR}/fronts.json" || true; echo
+          head -c 400 "${PAGES_DIR}/fronts.json" || true; echo
 
       - name: Validate JSON
         shell: bash
