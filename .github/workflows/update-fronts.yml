@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'   # every ~5 min
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main
-  PAGES_DIR: .
+  PAGES_BRANCH: main        # change if your Pages branch is different (e.g., gh-pages)
+  PAGES_DIR: .              # change to docs if your site serves from /docs
 
 jobs:
   update:
@@ -104,7 +104,7 @@ jobs:
               mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
             done
 
-            # ✅ convert ms → s before todate
+            # ✅ convert milliseconds → seconds before todate
             jq -S --arg lc "${LAST_CHANGE:-}" '{
               membersFronting: .,
               lastChange: (
@@ -129,7 +129,8 @@ jobs:
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          head -c 400 "${PAGES_DIR}/fronts.json" || true; echo
+          head -c 400 "${PAGES_DIR}/fronts.json" || true
+          echo
 
       - name: Validate JSON
         shell: bash
