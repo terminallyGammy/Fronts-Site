@@ -71,7 +71,9 @@ jobs:
           fi
 
           # lastChange from ms → ISO
-          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json")
+          LAST_CHANGE=$(
+            jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json"
+          )
           : "${LAST_CHANGE:=}"
 
           # 3) Get full members list
@@ -93,7 +95,7 @@ jobs:
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
             --arg lc "${LAST_CHANGE:-}" \
             --arg WARNING_FIELD "${WARNING_FIELD}" '
-{
+  {
   lastChange: (if $lc=="" then null else (try ($lc|tonumber/1000|todate) catch .) end),
   membersFronting: (
     $fh
