@@ -3,97 +3,183 @@
 <head>
   <meta charset="UTF-8" />
   <title>Current Fronters</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
-      --card-w: 680px;
+      --card-bg: #fff;
+      --border: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --pill: #f3f4f6;
+      --warn-bg: #fff7ed;
+      --warn-border: #f59e0b;
     }
     body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      background: #fdfdfd;
-      color: #333;
-      max-width: var(--card-w);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+      background: #f9fafb;
+      color: var(--text);
+      max-width: 780px;
       margin: 2rem auto;
       padding: 1rem;
-      text-align: center;
     }
-    h1 { letter-spacing: 0.5px; margin-bottom: 1rem; }
-    .front {
-      margin: 0.5rem auto;
-      padding: 0.9rem 1rem;
-      border: 1px solid #ddd;
-      border-radius: 12px;
-      background: #fafafa;
-      text-align: left;
+    h1 {
+      text-align: center;
+      margin: 0 0 1rem;
+      font-weight: 800;
+    }
+    #meta {
+      text-align: center;
+      color: var(--muted);
+      font-size: .95rem;
+      margin-bottom: 1.25rem;
+    }
+    .grid {
       display: grid;
-      grid-template-columns: 56px 1fr;
-      grid-gap: 12px;
-      align-items: center;
-      width: 100%;
-      box-sizing: border-box;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .front {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1rem;
+      display: grid;
+      grid-template-columns: 64px 1fr;
+      grid-template-rows: auto auto auto;
+      gap: .5rem 1rem;
+      align-items: start;
+    }
+    .bar {
+      height: 6px;
+      background: var(--pill);
+      border-radius: 999px;
+      grid-column: 1 / -1;
     }
     .avatar {
-      width: 56px; height: 56px; border-radius: 50%;
-      background: #eee; object-fit: cover; border: 1px solid #ddd;
+      width: 64px; height: 64px; border-radius: 12px; object-fit: cover; background: #eee; border: 1px solid var(--border);
+      grid-row: 1 / span 2;
     }
-    .title { font-weight: 600; }
-    .subtle { opacity: 0.8; font-size: 0.95rem; }
-    .warning {
+    .name {
+      font-size: 1.125rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .pronouns {
+      color: var(--muted);
+      font-size: .95rem;
+    }
+    .desc {
       grid-column: 1 / -1;
-      margin-top: 6px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      background: #fff6f6;
-      border: 1px solid #f3c2c2;
-      color: #8b2c2c;
-      font-size: 0.95rem;
+      font-size: .98rem;
+      color: #1f2937;
       white-space: pre-wrap;
     }
-    .note { font-size: 0.9rem; opacity: 0.8; margin-top: 0.75rem; }
+    .fields {
+      grid-column: 1 / -1;
+      display: flex; flex-wrap: wrap; gap: .5rem;
+      margin-top: .25rem;
+    }
+    .field {
+      background: var(--pill);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: .25rem .6rem;
+      font-size: .9rem;
+    }
+    .warning {
+      grid-column: 1 / -1;
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      color: #92400e;
+      border-radius: 10px;
+      padding: .65rem .75rem;
+      font-weight: 600;
+      margin-top: .25rem;
+      white-space: pre-wrap;
+    }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      font-size: 1.05rem;
+      padding: 2rem 0;
+    }
   </style>
 </head>
 <body>
-  <h1>⋆˚✿˖°Current Fronters⋆˚✿˖°</h1>
-  <div id="fronts">Loading...</div>
-  <div class="note" id="meta"></div>
+  <h1>⋆˚✿˖° Current Fronters ⋆˚✿˖°</h1>
+  <div id="meta">Loading…</div>
+  <div id="fronts" class="grid"></div>
 
   <script>
-async function loadFronts() {
-  const out = document.getElementById("fronts");
-  const meta = document.getElementById("meta");
-  try {
-    const res = await fetch(`./fronts.json?v=${Date.now()}`, { cache: "no-store" });
-    const data = await res.json();
+    async function loadFronts() {
+      const out = document.getElementById("fronts");
+      const meta = document.getElementById("meta");
+      try {
+        const res = await fetch("./fronts.json", { cache: "no-store" });
+        const raw = await res.text();
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0,200)}`);
+        const data = JSON.parse(raw || "{}");
 
-    const list = Array.isArray(data?.membersFronting) ? data.membersFronting : [];
-    if (!list.length) {
-      out.textContent = "No one fronting right now.";
-      meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
-      return;
+        const lastChange = data?.lastChange ? new Date(data.lastChange) : null;
+        meta.textContent = lastChange
+          ? `Last change: ${lastChange.toLocaleString()}`
+          : `Last change: —`;
+
+        const list = Array.isArray(data?.membersFronting) ? data.membersFronting : [];
+        if (list.length === 0) {
+          out.innerHTML = `<div class="empty">No one is fronting right now.</div>`;
+          return;
+        }
+
+        out.innerHTML = list.map(m => {
+          const color = m.color || "#e5e7eb";
+          const name = m.displayName || m.name || "Unnamed";
+          const pronouns = m.pronouns ? `<div class="pronouns">${m.pronouns}</div>` : "";
+          const avatar = m.avatar
+            ? `<img class="avatar" src="${m.avatar}" alt="" loading="lazy">`
+            : `<div class="avatar" aria-hidden="true"></div>`;
+          const desc = m.description ? `<div class="desc">${escapeHtml(m.description)}</div>` : "";
+          const fields = Array.isArray(m.fields) && m.fields.length
+            ? `<div class="fields">${
+                m.fields
+                  .filter(f => f?.label && f?.value) // hide empties
+                  .map(f => `<span class="field" title="${escapeHtml(f.label)}">${escapeHtml(f.label)}: ${escapeHtml(String(f.value))}</span>`)
+                  .join("")
+              }</div>`
+            : "";
+          const warn = m.warning ? `<div class="warning">${escapeHtml(m.warning)}</div>` : "";
+
+          return `
+            <div class="front">
+              <div class="bar" style="background:${color}"></div>
+              ${avatar}
+              <div>
+                <div class="name">${escapeHtml(name)}</div>
+                ${pronouns}
+              </div>
+              ${desc}
+              ${fields}
+              ${warn}
+            </div>
+          `;
+        }).join("");
+      } catch (err) {
+        console.error(err);
+        meta.textContent = "Error loading fronts.json";
+        out.innerHTML = `<div class="empty">Could not load current fronters.</div>`;
+      }
     }
 
-    out.innerHTML = list.map(m => {
-      const name = m.displayName || m.name || m.id || "Unnamed";
-      const pr   = m.pronouns ? `<div style="opacity:.8">${m.pronouns}</div>` : "";
-      const warn = m.warning ? `<div style="margin-top:.5rem;padding:.5rem;border-radius:6px;background:#fff3cd;border:1px solid #ffe69c;text-align:left;white-space:pre-wrap">${m.warning}</div>` : "";
-      const img  = m.avatar ? `<img src="${m.avatar}" alt="${name}" style="width:64px;height:64px;border-radius:50%;object-fit:cover;display:block;margin:0 auto .5rem">` : "";
-      const border = m.color || "#ddd";
-      return `
-        <div class="front" style="border-left:8px solid ${border};">
-          ${img}
-          <div><strong>${name}</strong></div>
-          ${pr}
-          ${warn}
-        </div>
-      `;
-    }).join("");
+    function escapeHtml(s) {
+      return String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
 
-    meta.textContent = data?.lastChange ? ("Last change: " + new Date(data.lastChange).toLocaleString()) : "";
-  } catch (e) {
-    out.textContent = "Error loading fronts.";
-    console.error(e);
-  }
-}
-loadFronts();
-</script>
+    loadFronts();
+  </script>
 </body>
 </html>
