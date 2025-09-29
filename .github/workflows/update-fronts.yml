@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'   # every ~5 min
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main
-  PAGES_DIR: .
+  PAGES_BRANCH: main        # change if your Pages branch is different
+  PAGES_DIR: .              # change to docs if your site serves from /docs
 
 jobs:
   update:
@@ -43,7 +43,7 @@ jobs:
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          # 1) Fetch "fronters"
+          # 1) Fetch /v1/fronters/
           URL_FRONTERS="https://api.apparyllis.com/v1/fronters/"
           echo "Fetching: $URL_FRONTERS"
           HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/resp.json" -w "%{http_code}" \
@@ -56,7 +56,7 @@ jobs:
             echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/resp.json"; exit 1
           fi
 
-          # 2) If we already got the right shape (object with membersFronting), just pretty-print and save.
+          # 2) If correct shape already -> pretty-print and save
           if jq -e 'type == "object" and (.membersFronting | type=="array")' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
             jq -S . "${PAGES_DIR}/resp.json" > "${PAGES_DIR}/fronts.json"
             rm -f "${PAGES_DIR}/resp.json"
@@ -64,14 +64,13 @@ jobs:
             exit 0
           fi
 
-          # 3) If we got an array (history), normalize it.
+          # 3) If array (front-history), normalize to {membersFronting: [...], lastChange: ...}
           if jq -e 'type == "array"' "${PAGES_DIR}/resp.json" >/dev/null 2>&1; then
             echo "Response is array (front-history). Normalizing…"
 
-            # 3a) Extract unique live member IDs and latest timestamp from the history array
             LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/resp.json" || true)
             LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/resp.json" || true)
-            : "${LAST_CHANGE:=}"  # default empty
+            : "${LAST_CHANGE:=}"
 
             if [ -z "${LIVE_IDS}" ]; then
               echo '{"membersFronting": [], "lastChange": null}' | jq -S . > "${PAGES_DIR}/fronts.json"
@@ -80,8 +79,7 @@ jobs:
               exit 0
             fi
 
-            # 3b) Fetch members (self). Some deployments use /v1/members/, others /v1/members/self.
-            # Try /v1/members/ first; if non-200, try /v1/members/self
+            # Try members endpoints: /v1/members/ then /v1/members/self
             MEMBERS_URL="https://api.apparyllis.com/v1/members/"
             echo "Fetching members: $MEMBERS_URL"
             HTTP_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
@@ -100,12 +98,9 @@ jobs:
               [ "${HTTP_MEM}" = "200" ] || { echo "Members fetch failed (${HTTP_MEM})"; cat "${PAGES_DIR}/members.json"; exit 1; }
             fi
 
-            # 3c) Build membersFronting by matching IDs against the members list
-            # Build a JSON array ["id1","id2",...] for jq
             IDS_JSON=$(printf '%s\n' ${LIVE_IDS} | jq -R . | jq -s .)
 
             jq -S --argjson ids "${IDS_JSON}" --arg lastChange "${LAST_CHANGE:-}" '
-              # make a map id -> member object
               ( . as $all
               | reduce .[] as $m ({}; .[$m.id] = {
                   id: $m.id,
@@ -135,7 +130,8 @@ jobs:
         env:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
-          head -c 400 "${PAGES_DIR}/fronts.json" || true; echo
+          head -c 400 "${PAGES_DIR}/fronts.json" || true
+          echo
 
       - name: Validate JSON
         shell: bash
