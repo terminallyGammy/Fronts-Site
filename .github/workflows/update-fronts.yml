@@ -11,7 +11,6 @@ permissions:
 env:
   PAGES_BRANCH: main
   PAGES_DIR: .
-  WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
 
 jobs:
   update:
@@ -45,7 +44,7 @@ jobs:
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
           mkdir -p "${PAGES_DIR}"
 
-          # --- 1) Identify systemId (fall back to uid/id from /me)
+          # 1) Identify systemId (fallbacks included)
           echo "→ /v1/me"
           CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
@@ -59,7 +58,7 @@ jobs:
           [ -n "${SYSTEM_ID}" ] || { echo "ERROR: systemId not found in /v1/me"; exit 1; }
           echo "systemId=${SYSTEM_ID}"
 
-          # --- 2) Get current fronters (history array)
+          # 2) Get current fronters (history array)
           echo "→ /v1/fronters/"
           CODE_F=$(curl -sS -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
@@ -71,11 +70,11 @@ jobs:
             echo "ERROR: cannot get fronters"; cat "${PAGES_DIR}/fh.json"; exit 1
           fi
 
-          # Extract lastChange (ms since epoch → ISO)
+          # lastChange from ms → ISO
           LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json")
           : "${LAST_CHANGE:=}"
 
-          # --- 3) Get full members list for system
+          # 3) Get full members list
           echo "→ /v1/members/${SYSTEM_ID}"
           CODE_MEM=$(curl -sS -o "${PAGES_DIR}/members.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
@@ -88,7 +87,7 @@ jobs:
             exit 1
           fi
 
-          # --- 4) Join fronters (live) with member profiles → fronts.json
+          # 4) Join fronters (live) with member profiles → fronts.json
           jq -n \
             --argjson fh "$(cat "${PAGES_DIR}/fh.json")" \
             --argjson mem "$(cat "${PAGES_DIR}/members.json")" \
@@ -103,20 +102,22 @@ jobs:
                 | unique
                 | map(
                     . as $mid
-                    | ($mem[] | select(.id==$mid) | .content) as $m?
-                    | if $m then {
-                        id: $mid,
-                        displayName: $m.name,
-                        pronouns: $m.pronouns,
-                        avatar: $m.avatarUrl,
-                        color: $m.color,
-                        warning: (
-                          ($m.fields // {})
-                          | to_entries[]
-                          | select(.value.name==$WARNING_FIELD)
-                          | .value.value? // null
-                        )
-                      } else {
+                    | ( ( $mem[] | select(.id==$mid) | .content ) // null ) as $m
+                    | if $m != null then
+                        {
+                          id: $mid,
+                          displayName: $m.name,
+                          pronouns: $m.pronouns,
+                          avatar: $m.avatarUrl,
+                          color: $m.color,
+                          warning: (
+                            ($m.fields // {})
+                            | to_entries
+                            | map(select(.value.name == $WARNING_FIELD) | .value.value)
+                            | first // null
+                          )
+                        }
+                      else
                         { id: $mid, displayName: null, pronouns: null, avatar: null, color: null, warning: null }
                       end
                   )
