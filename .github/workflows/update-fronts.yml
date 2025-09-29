@@ -38,6 +38,7 @@ jobs:
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
           PAGES_DIR: ${{ env.PAGES_DIR }}
+          WARNING_FIELD: "/!\\━━━━━━━━━━━ WARNING ━━━━━━━━━━━/!\\"
         run: |
           set -euo pipefail
           test -n "${SP_TOKEN}" || { echo "ERROR: SP_TOKEN secret is not set"; exit 1; }
@@ -88,23 +89,35 @@ jobs:
                 -H "Accept: application/json" \
                 -H "Cache-Control: no-cache" \
                 "${MEM_URL}" || true)
+
               if [ "${CODE}" = "200" ]; then
-                jq -S '{
+                jq -S --arg WARN "${WARNING_FIELD}" '{
                   id: (.id // "'${ID}'"),
                   uuid: (.uuid // null),
                   name: (.name // null),
                   displayName: (.displayName // null),
-                  color: (.color // null)
+                  color: (.color // null),
+                  pronouns: (.pronouns // .pronoun // .prns // null),
+                  avatar: (
+                    .avatarUrl // .avatarURL // .avatar // .profilePictureUrl // .profileImageUrl // .imageUrl // null
+                  ),
+                  warning: (
+                    ((.fields // .customFields // [])
+                      | map({k:(.name // .key // ""), v:(.value // .val // null)}))
+                    | map(select(.k == $WARN))
+                    | (.[0].v // null)
+                  )
                 }' "${PAGES_DIR}/m.json" > "${PAGES_DIR}/one.json"
               else
                 echo "Member ${ID} returned ${CODE}; using minimal record."
-                echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "color": null }' > "${PAGES_DIR}/one.json"
+                echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "color": null, "pronouns": null, "avatar": null, "warning": null }' > "${PAGES_DIR}/one.json"
               fi
+
               jq -S '. + [ input ]' "${PAGES_DIR}/mf.json" "${PAGES_DIR}/one.json" > "${PAGES_DIR}/newmf.json"
               mv "${PAGES_DIR}/newmf.json" "${PAGES_DIR}/mf.json"
             done
 
-            # ✅ convert milliseconds → seconds before todate
+            # convert milliseconds → seconds before todate
             jq -S --arg lc "${LAST_CHANGE:-}" '{
               membersFronting: .,
               lastChange: (
