@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # every ~5 min
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
 env:
-  PAGES_BRANCH: main        # change if your Pages branch is different (e.g., gh-pages)
-  PAGES_DIR: .              # change to docs if your site serves from /docs
+  PAGES_BRANCH: main
+  PAGES_DIR: .
 
 jobs:
   update:
@@ -46,7 +46,7 @@ jobs:
 
           hdr() { sed -n '1,40p' "$1" 2>/dev/null || true; }
 
-          # --- A) Find userId and systemId ---
+          # A) find userId and systemId
           echo "→ /v1/me"
           CODE_ME=$(curl -sS -o "${PAGES_DIR}/me.txt" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" https://api.apparyllis.com/v1/me || true)
@@ -71,7 +71,7 @@ jobs:
           fi
           echo "systemId=${SYSTEM_ID}"
 
-          # --- B) Get current fronters ---
+          # B) get current fronters
           echo "→ /v1/fronters/"
           CODE_F=$(curl -sS -D "${PAGES_DIR}/fh.hdr" -o "${PAGES_DIR}/fh.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" \
@@ -83,6 +83,7 @@ jobs:
             echo "ERROR: cannot get fronters"; exit 1
           fi
 
+          # If already correct shape, keep as-is
           if jq -e 'type=="object" and (.membersFronting|type=="array")' "${PAGES_DIR}/fh.json" >/dev/null; then
             jq -S . "${PAGES_DIR}/fh.json" > "${PAGES_DIR}/fronts.json"
             rm -f "${PAGES_DIR}/fh.json"
@@ -90,6 +91,7 @@ jobs:
             exit 0
           fi
 
+          # C) normalize history -> membersFronting
           echo "Normalizing history → membersFronting via per-member lookups…"
           LIVE_IDS=$(jq -r '[ .[] | select(.content.live==true) | .content.member ] | unique | .[]?' "${PAGES_DIR}/fh.json" || true)
           LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json" || true)
@@ -110,6 +112,8 @@ jobs:
               -H "Authorization: ${SP_TOKEN}" -H "Accept: application/json" "${MEM_URL}" || true)
             echo "member ${ID} → HTTP ${CODE_M}"
             if [ "${CODE_M}" != "200" ]; then
+              echo "Headers:"; hdr "${PAGES_DIR}/m.hdr"
+              echo "Body:"; head -c 400 "${PAGES_DIR}/m.json" || true; echo
               echo '{ "id": "'${ID}'", "uuid": null, "name": null, "displayName": null, "pronouns": null, "avatar": null, "color": null, "info": null, "warning": null }' > "${PAGES_DIR}/one.json"
             else
               jq -S --arg WARN "${WARNING_FIELD}" '{
@@ -130,9 +134,7 @@ jobs:
 
           jq -S --arg lc "${LAST_CHANGE:-}" '{
             membersFronting: .,
-            lastChange: (
-              $lc | if .=="" then null else (try (tonumber / 1000 | todate) catch .) end
-            )
+            lastChange: ( $lc | if .=="" then null else (try (tonumber / 1000 | todate) catch .) end )
           }' "${PAGES_DIR}/mf.json" > "${PAGES_DIR}/fronts.json"
 
           rm -f "${PAGES_DIR}/fh.json" "${PAGES_DIR}/mf.json" "${PAGES_DIR}/m.json" "${PAGES_DIR}/m.hdr" "${PAGES_DIR}/one.json"
