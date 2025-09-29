@@ -30,7 +30,10 @@ jobs:
           echo "Repo root contents:"; ls -la
           echo "PAGES_DIR contents:"; ls -la "${{ env.PAGES_DIR }}" || true
 
-      - name: Fetch current fronters (self) → fronts.json
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Fetch fronts from SimplyPlural (no-cache) → temp JSON
         shell: bash
         env:
           SP_TOKEN: ${{ secrets.SP_TOKEN }}
@@ -41,12 +44,13 @@ jobs:
           URL="https://api.apparyllis.com/v1/fronters/"
           echo "Fetching: $URL"
           mkdir -p "${PAGES_DIR}"
-          HTTP_CODE=$(curl -sS -o "${PAGES_DIR}/fronts.raw.json" -w "%{http_code}" \
+          HTTP_CODE=$(curl -sS -D "${PAGES_DIR}/fronts.headers.txt" -o "${PAGES_DIR}/fronts.raw.json" -w "%{http_code}" \
             -H "Authorization: ${SP_TOKEN}" \
             -H "Accept: application/json" \
             -H "Cache-Control: no-cache" \
+            -H "Pragma: no-cache" \
             "${URL}")
-          echo "HTTP ${HTTP_CODE}"
+          echo "Fetch HTTP status: ${HTTP_CODE}"
           if [ "${HTTP_CODE}" != "200" ]; then
             echo "Non-200 from API; body follows:"; cat "${PAGES_DIR}/fronts.raw.json"; exit 1
           fi
@@ -54,10 +58,44 @@ jobs:
           if jq -e 'type == "array"' "${PAGES_DIR}/fronts.raw.json" >/dev/null; then
             echo "WARNING: Response is an ARRAY (front history), not /v1/fronters/. Check the URL above and your workflow."
           fi
-          # Pretty-print deterministically
-          jq -S . "${PAGES_DIR}/fronts.raw.json" > "${PAGES_DIR}/fronts.json"
+          # Pretty-print deterministically (sorted keys)
+          jq -S . "${PAGES_DIR}/fronts.raw.json" > "${PAGES_DIR}/fronts.new.json"
           rm -f "${PAGES_DIR}/fronts.raw.json"
-          echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to ${PAGES_DIR}/fronts.json"
+
+      - name: Show first 400 chars of new JSON (debug)
+        shell: bash
+        env:
+          PAGES_DIR: ${{ env.PAGES_DIR }}
+        run: |
+          head -c 400 "${PAGES_DIR}/fronts.new.json" || true; echo
+
+      - name: Diff against existing fronts.json (if any)
+        shell: bash
+        env:
+          PAGES_DIR: ${{ env.PAGES_DIR }}
+        run: |
+          set -e
+          if [ -f "${PAGES_DIR}/fronts.json" ]; then
+            echo "Existing file found; computing diff (first 80 chars per line):"
+            diff -u <(jq -S . "${PAGES_DIR}/fronts.json") "${PAGES_DIR}/fronts.new.json" | sed 's/\t/ /g' | cut -c1-80 || true
+          else
+            echo "No existing fronts.json; will create it."
+          fi
+
+      - name: Replace file only if changed
+        shell: bash
+        env:
+          PAGES_DIR: ${{ env.PAGES_DIR }}
+        run: |
+          set -e
+          if [ -f "${PAGES_DIR}/fronts.json" ] && cmp -s "${PAGES_DIR}/fronts.json" "${PAGES_DIR}/fronts.new.json"; then
+            echo "No changes detected in JSON; keeping existing file."
+            rm -f "${PAGES_DIR}/fronts.new.json"
+            echo "NO_UPDATE=1" >> $GITHUB_ENV
+          else
+            mv "${PAGES_DIR}/fronts.new.json" "${PAGES_DIR}/fronts.json"
+            echo "Updated ${PAGES_DIR}/fronts.json"
+          fi
 
       - name: Validate JSON
         shell: bash
@@ -73,6 +111,10 @@ jobs:
           PAGES_DIR: ${{ env.PAGES_DIR }}
         run: |
           set -e
+          if [ "${NO_UPDATE:-0}" = "1" ]; then
+            echo "fronts.json unchanged; skipping commit."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${PAGES_DIR}/fronts.json"
