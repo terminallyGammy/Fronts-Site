@@ -2,15 +2,15 @@ name: Update Fronts (SimplyPlural → fronts.json)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'   # every ~5 min
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: write           # allow committing fronts.json
 
 env:
-  PAGES_BRANCH: main
-  PAGES_DIR: .
+  PAGES_BRANCH: main        # <-- change if your Pages branch is different (e.g., gh-pages)
+  PAGES_DIR: .              # <-- change to docs if Pages serves from /docs
 
 jobs:
   update:
@@ -48,6 +48,14 @@ jobs:
           fi
           mv "${PAGES_DIR}/fronts.json.tmp" "${PAGES_DIR}/fronts.json"
           echo "Wrote $(wc -c < "${PAGES_DIR}/fronts.json") bytes to ${PAGES_DIR}/fronts.json"
+
+      - name: Show first 400 chars of fronts.json (debug)
+        shell: bash
+        env:
+          PAGES_DIR: ${{ env.PAGES_DIR }}
+        run: |
+          head -c 400 "${PAGES_DIR}/fronts.json" || true
+          echo
 
       - name: Validate JSON
         shell: bash
