@@ -1,16 +1,4 @@
 {
-  "lastChange": "1759118806779",
-  "membersFronting": [
-    {
-      "avatar": null,
-      "color": null,
-      "displayName": null,
-      "id": "687c24324729979f0e000000",
-      "info": null,
-      "name": null,
-      "pronouns": null,
-      "uuid": null,
-      "warning": null
-    }
-  ]
+  "membersFronting": [],
+  "lastChange": "null (null) cannot be parsed as a number"
 }
