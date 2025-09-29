@@ -71,7 +71,9 @@ jobs:
           fi
 
           # lastChange from ms → ISO
-          LAST_CHANGE=$(jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json")
+          LAST_CHANGE=$(
+            jq -r '[ .[] | .content.lastOperationTime?, .content.startTime? ] | map(select(.!=null)) | max // empty' "${PAGES_DIR}/fh.json"
+          )
           : "${LAST_CHANGE:=}"
 
           # 3) Get full members list
