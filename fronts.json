@@ -2,11 +2,14 @@
   "lastChange": "2025-09-29T02:22:39Z",
   "membersFronting": [
     {
+      "avatar": null,
       "color": null,
       "displayName": null,
       "id": "687c24324729979f0e000000",
       "name": null,
-      "uuid": null
+      "pronouns": null,
+      "uuid": null,
+      "warning": null
     }
   ]
 }
