@@ -6,29 +6,75 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
-      --card-bg: #fff; --border: #e5e7eb; --text: #111827; --muted: #6b7280;
-      --pill: #f3f4f6; --warn-bg: #fff7ed; --warn-border: #f59e0b;
+      --card-bg:#fff; --border:#e5e7eb; --text:#111827; --muted:#6b7280;
+      --pill:#f3f4f6; --warn-bg:#fff7ed; --warn-border:#f59e0b;
     }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial;
-      background:#f9fafb; color:var(--text); max-width:780px; margin:2rem auto; padding:1rem; }
+    body {
+      font-family: system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;
+      background:#f9fafb; color:var(--text);
+      max-width:780px; margin:2rem auto; padding:1rem;
+    }
     h1 { text-align:center; margin:0 0 1rem; font-weight:800; }
     #meta { text-align:center; color:var(--muted); font-size:.95rem; margin-bottom:1.25rem; }
+
     .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; }
-    .front { background:var(--card-bg); border:1px solid var(--border); border-radius:14px; padding:1rem;
-      display:grid; grid-template-columns:64px 1fr; grid-template-rows:auto auto auto; gap:.5rem 1rem; align-items:start; }
-    .bar { height:6px; background:var(--pill); border-radius:999px; grid-column:1 / -1; }
-    .avatar { width:64px; height:64px; border-radius:12px; object-fit:cover; background:#eee; border:1px solid var(--border);
-      grid-row:1 / span 2; }
+
+    .front {
+      background:var(--card-bg); border:1px solid var(--border); border-radius:14px; padding:1rem;
+      display:grid; grid-template-columns:64px 1fr; grid-template-rows:auto auto auto;
+      gap:.5rem 1rem; align-items:start; overflow:hidden; /* keep content inside */
+    }
+    .bar { height:6px; background:var(--pill); border-radius:999px; grid-column:1/-1; }
+
+    .avatar {
+      width:64px; height:64px; border-radius:12px; object-fit:cover; background:#eee; border:1px solid var(--border);
+      grid-row:1/span 2;
+    }
     .name { font-size:1.125rem; font-weight:700; line-height:1.2; }
     .pronouns { color:var(--muted); font-size:.95rem; }
-    .desc, .warning, .fields { grid-column:1 / -1; }
-    .desc { font-size:.98rem; color:#1f2937; }
+
+    .desc, .warning, .fields { grid-column:1/-1; }
     .fields { display:flex; flex-direction:column; gap:.35rem; margin-top:.25rem; }
     .field { background:var(--pill); border:1px solid var(--border); border-radius:10px; padding:.45rem .6rem; font-size:.92rem; }
     .field b { color:#111827; }
-    .warning { background:var(--warn-bg); border:1px solid var(--warn-border); color:#92400e;
-      border-radius:10px; padding:.65rem .75rem; font-weight:600; margin-top:.25rem; }
+
+    .warning {
+      background:var(--warn-bg); border:1px solid var(--warn-border); color:#92400e;
+      border-radius:10px; padding:.65rem .75rem; font-weight:600; margin-top:.25rem;
+    }
+
     .empty { text-align:center; color:var(--muted); font-size:1.05rem; padding:2rem 0; }
+
+    /* ---- Scoped Markdown rules ---- */
+    .md { line-height:1.45; }
+    .md :is(h1,h2,h3,h4,h5,h6){ margin:.6rem 0 .3rem; line-height:1.25; }
+    .md p { margin:.5rem 0; }
+    .md ul, .md ol { margin:.4rem 0 .6rem 1.25rem; }
+    .md li { margin:.25rem 0; }
+    .md hr { border:none; border-top:1px solid var(--border); margin:.75rem 0; }
+    .md a { color:#2563eb; text-decoration:underline; word-break:break-word; }
+    .md code { background:#f6f7f9; border:1px solid var(--border); border-radius:6px; padding:.1rem .3rem; }
+    .md pre { background:#0b1020; color:#f5f7ff; border-radius:8px; padding:.6rem .75rem; overflow:auto; }
+    .md blockquote {
+      margin:.6rem 0; padding:.4rem .75rem; border-left:4px solid #cbd5e1; background:#f8fafc; color:#334155; border-radius:6px;
+    }
+
+    /* Images: full-width, contained, with max-height limits */
+    .md img {
+      max-width:100%; height:auto; display:block; margin:.4rem 0;
+      border-radius:8px; border:1px solid var(--border);
+    }
+    /* Description can have big banners; cap height a bit */
+    .desc .md img { max-height:420px; object-fit:contain; }
+    /* Field values should be smaller */
+    .field .md img { max-height:160px; object-fit:contain; }
+
+    /* Tables */
+    .md table { width:100%; border-collapse:collapse; margin:.5rem 0; }
+    .md th, .md td { border:1px solid var(--border); padding:.35rem .5rem; }
+    .md th { background:#f3f4f6; text-align:left; }
+    /* Wrap long text instead of overflowing */
+    .md :is(p,li,td){ overflow-wrap:anywhere; }
   </style>
 
   <!-- Markdown + sanitization -->
@@ -41,44 +87,32 @@
   <div id="fronts" class="grid"></div>
 
   <script>
-    // Wait until both libraries are present (handles CDN race) then render.
-    (async function start() {
-      const ok = await waitFor(() => window.marked && window.DOMPurify, 40, 100);
-      if (ok) {
-        // nice defaults
-        try { window.marked.setOptions({ breaks: true }); } catch {}
-      } else {
-        console.warn("CDN libs missing; using minimal markdown fallback.");
-      }
+    (async function start(){
+      // Wait until both libs exist (handles CDN race).
+      for (let i=0;i<40 && !(window.marked && window.DOMPurify); i++)
+        await new Promise(r=>setTimeout(r,100));
+      if (window.marked) try { marked.setOptions({ breaks:true }); } catch{}
       loadFronts();
     })();
-
-    async function waitFor(testFn, tries=20, delay=100) {
-      for (let i=0;i<tries;i++){ if (testFn()) return true; await new Promise(r=>setTimeout(r,delay)); }
-      return false;
-    }
 
     async function loadFronts() {
       const out = document.getElementById("fronts");
       const meta = document.getElementById("meta");
       try {
         const res = await fetch("./fronts.json", { cache: "no-store" });
-        const raw = await res.text();
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0,200)}`);
-        const data = JSON.parse(raw || "{}");
+        const text = await res.text();
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0,200)}`);
+        const data = JSON.parse(text || "{}");
 
-        const lastChange = data?.lastChange ? new Date(data.lastChange) : null;
-        meta.textContent = lastChange ? `Last change: ${lastChange.toLocaleString()}` : `Last change: —`;
+        const lc = data?.lastChange ? new Date(data.lastChange) : null;
+        meta.textContent = lc ? `Last change: ${lc.toLocaleString()}` : `Last change: —`;
 
         const list = Array.isArray(data?.membersFronting) ? data.membersFronting : [];
-        if (list.length === 0) {
-          out.innerHTML = `<div class="empty">No one is fronting right now.</div>`;
-          return;
-        }
+        if (!list.length) { out.innerHTML = `<div class="empty">No one is fronting right now.</div>`; return; }
 
         out.innerHTML = list.map(renderFront).join("");
-      } catch (err) {
-        console.error(err);
+      } catch (e) {
+        console.error(e);
         meta.textContent = "Error loading fronts.json";
         out.innerHTML = `<div class="empty">Could not load current fronters.</div>`;
       }
@@ -87,29 +121,27 @@
     function renderFront(m) {
       const color = m.color || "#e5e7eb";
       const name = m.displayName || m.name || "Unnamed";
-      const pronouns = m.pronouns ? `<div class="pronouns">${escapeHtml(m.pronouns)}</div>` : "";
-      const avatar = m.avatar
-        ? `<img class="avatar" src="${escapeHtml(m.avatar)}" alt="" loading="lazy">`
-        : `<div class="avatar" aria-hidden="true"></div>`;
+      const pronouns = m.pronouns ? `<div class="pronouns">${esc(m.pronouns)}</div>` : "";
+      const avatar = m.avatar ? `<img class="avatar" src="${esc(m.avatar)}" alt="" loading="lazy">`
+                              : `<div class="avatar" aria-hidden="true"></div>`;
 
-      const desc = m.description ? `<div class="desc">${renderMD(m.description)}</div>` : "";
-      const warn = m.warning ? `<div class="warning">${renderMD(m.warning)}</div>` : "";
+      const desc = m.description ? `<div class="desc"><div class="md">${md(m.description)}</div></div>` : "";
+      const warn = m.warning ? `<div class="warning"><div class="md">${md(m.warning)}</div></div>` : "";
 
       const fields = Array.isArray(m.fields) && m.fields.length
         ? `<div class="fields">${
             m.fields
               .filter(f => f?.label && f?.value)
-              .map(f => `<div class="field"><b>${escapeHtml(f.label)}:</b> ${renderMD(String(f.value))}</div>`)
+              .map(f => `<div class="field"><b>${esc(f.label)}:</b> <div class="md">${md(String(f.value))}</div></div>`)
               .join("")
-          }</div>`
-        : "";
+          }</div>` : "";
 
       return `
         <div class="front">
-          <div class="bar" style="background:${escapeHtml(color)}"></div>
+          <div class="bar" style="background:${esc(color)}"></div>
           ${avatar}
           <div>
-            <div class="name">${escapeHtml(name)}</div>
+            <div class="name">${esc(name)}</div>
             ${pronouns}
           </div>
           ${desc}
@@ -119,28 +151,19 @@
       `;
     }
 
-    function renderMD(s) {
-      const text = String(s ?? "");
+    function md(s){
+      const txt = String(s ?? "");
       if (window.marked && window.DOMPurify) {
-        const html = window.marked.parse(text);
-        return window.DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+        const html = marked.parse(txt);
+        return DOMPurify.sanitize(html, {USE_PROFILES:{html:true}});
       }
-      // Fallback: super-minimal MD (images, links, line breaks)
-      let html = escapeHtml(text)
-        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" style="max-width:100%;border-radius:8px;border:1px solid #e5e7eb" loading="lazy">')
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-        .replace(/\n/g, '<br>');
-      return html;
+      // Fallback: minimal markdown
+      return esc(txt).replace(/!\[([^\]]*)\]\(([^)]+)\)/g,'<img alt="$1" src="$2">')
+                     .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+                     .replace(/\n/g,'<br>');
     }
-
-    function escapeHtml(s) {
-      return String(s)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-    }
+    const esc = s => String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+                              .replaceAll('"',"&quot;").replaceAll("'","&#39;");
   </script>
 </body>
 </html>
